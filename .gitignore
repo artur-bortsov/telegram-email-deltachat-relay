@@ -1,0 +1,45 @@
+# Local configuration and secrets
+config.toml
+*.session
+*.session-journal
+
+# Runtime state
+relay_state.json
+relay_state.tmp
+relay.log
+relay.pid
+invite_links.txt
+
+# Delta Chat data
+deltachat_accounts/
+*.db
+*.db-shm
+*.db-wal
+
+# Python
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# Logs
+logs/
+*.log
+
+# Platform-specific service logs
+launchd.stdout.log
+launchd.stderr.log
+*.out.log
+*.err.log
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db

@@ -1,0 +1,223 @@
+# ============================================================
+# Aardvark – configuration reference
+# Copy this file to config.toml and fill in your values.
+# Lines starting with # are comments.
+#
+# The service reloads this file automatically while running:
+# channel additions/removals and burst settings are applied
+# on the fly.  Other changes require a service restart.
+# ============================================================
+
+
+# ------------------------------------------------------------
+# [telegram]  –  your personal Telegram account credentials
+#
+# api_id / api_hash  –  unique application credentials issued
+#   by Telegram.  Get them at: https://my.telegram.org/apps
+#   Sign in with your phone number, open "API development tools",
+#   create an app (the app name does not matter), then copy
+#   api_id (a number) and api_hash (a 32-character hex string).
+#
+# phone  –  your Telegram phone number in international format.
+#   Example: +12025551234
+#   The first time you run the service, Telegram will send you
+#   an SMS code.  Enter it in the terminal.  After that the
+#   session is saved and reused automatically.
+#
+# Two-step verification (2FA): if your Telegram account has a
+#   Cloud Password enabled, the wizard will prompt for it after
+#   the SMS code.  You cannot disable this prompt; it is built
+#   into the Telegram login flow.
+#
+# session_name  –  name for the saved session file (no extension).
+#   Default: "aardvark".  Change only if you run multiple instances.
+# ------------------------------------------------------------
+[telegram]
+api_id       = 0                      # Replace with your numeric API ID
+api_hash     = "YOUR_API_HASH_HERE"   # Replace with your 32-char API hash
+phone        = "+12025551234"         # Your Telegram phone number
+session_name = "aardvark"            # Session file name (aardvark.session)
+
+
+# ------------------------------------------------------------
+# [channels]  –  Telegram channels to monitor
+#
+# Entries can be:
+#   "@username"      – public channel or group username
+#   "t.me/username"  – t.me link
+#   1234567890       – numeric channel ID
+#
+# To find numeric IDs, run:  python app/relay.py --list-channels
+# ------------------------------------------------------------
+[channels]
+watch = [
+    "@example_channel",
+    # "@another_channel",
+    # 1234567890,
+]
+
+
+# ------------------------------------------------------------
+# [delta_chat]  –  Delta Chat email account
+#
+# Delta Chat is email-based (IMAP + SMTP).  Aardvark uses a
+# dedicated email account as its relay sender.  You do NOT
+# need the Delta Chat app on the same machine.
+#
+# IMPORTANT: use a separate, dedicated sender email address
+# for relay purposes.  Do not use your personal inbox.
+# Any standard IMAP/SMTP provider works (Gmail, Fastmail, etc.)
+# Gmail requires an "App Password" if 2FA is enabled.
+#
+# enabled  –  set to false to skip Delta Chat entirely.
+#   Useful when you only want email relay (see [email_relay]).
+#
+# addr / mail_pw  –  the sender email address and its password.
+#
+# database_path  –  path to the Delta Chat database file.
+#
+# mail_server / send_server  –  override auto-detected IMAP /
+#   SMTP server hostnames.  Leave commented out for most providers.
+# ------------------------------------------------------------
+[delta_chat]
+enabled       = true
+addr          = ""              # e.g. "relay-sender@example.com"
+mail_pw       = ""              # email password or App Password
+database_path = "deltachat.db"
+# mail_server = "imap.example.com"
+# send_server = "smtp.example.com"
+
+
+# ------------------------------------------------------------
+# [relay]  –  general relay behaviour
+#
+# history_mode:
+#   "last_n"      – relay the last history_last_n messages on startup
+#   "since_today" – relay all messages posted since midnight UTC today
+#
+# invite_links_file  –  path where Delta Chat invite links are written.
+#   Share the contents of this file with people who should receive
+#   forwarded messages in Delta Chat.  Use a secure channel (e.g.
+#   Signal, encrypted email) to distribute links.
+#
+# state_file  –  stores the last-relayed message ID per channel.
+#   Prevents duplicate messages after service restarts.
+#
+# max_media_size_mb  –  media files larger than this are replaced by
+#   a placeholder text.  Set to 0 to relay all media regardless of size.
+#
+# album_mode  –  how to relay Telegram media albums:
+#   "all_files" (default)  – first message: combined caption + first file;
+#                            remaining files follow as media-only messages.
+#   "first_only"           – one message only: first file + caption +
+#                            "[+N more]" note (remaining files skipped).
+#
+# album_window_seconds  –  seconds to wait for remaining album parts
+#   before dispatching.  Increase on slow/high-latency connections.
+# ------------------------------------------------------------
+[relay]
+history_mode         = "last_n"           # "last_n" or "since_today"
+history_last_n       = 3                  # messages to replay on first start
+invite_links_file    = "invite_links.txt"
+auto_create          = true               # auto-create DC channels on first message
+max_media_size_mb    = 10                 # 0 = unlimited
+state_file           = "relay_state.json"
+album_mode           = "all_files"        # "all_files" or "first_only"
+album_window_seconds = 5.0               # seconds to collect album parts
+
+
+# ------------------------------------------------------------
+# [burst]  –  text message flood limiter
+#
+# Prevents a channel that posts many text messages in rapid
+# succession from flooding the relay.
+#
+# When a channel sends >= threshold messages within window_seconds,
+# those messages are held and flushed as a single combined message
+# after window_seconds of inactivity.  Media messages bypass this.
+# ------------------------------------------------------------
+[burst]
+enabled        = true
+threshold      = 20          # messages in the window before burst mode activates
+window_seconds = 300         # sliding window and quiet timeout in seconds (5 min)
+separator      = "\n---\n"   # text between combined messages
+
+
+# ------------------------------------------------------------
+# [proxy]  --  proxy for TELEGRAM connections only
+#
+# Supports socks5, http, and mtproto.
+# MTProto is Telegram-specific and CANNOT be used for Delta Chat
+# or email.  For DC and email, use the separate [dc_proxy] section.
+#
+# SOCKS5 / HTTP: requires PySocks (pip install PySocks).
+# MTProto: put the proxy secret (hex or base64) in the password
+#   field; leave username empty.
+# rdns: route DNS lookups through the proxy (recommended).
+# use_for_dc / use_for_email: only apply when type is socks5/http
+#   AND [dc_proxy] is NOT configured.  Auto-builds dc_proxy from
+#   these settings as a convenience when one proxy serves all.
+# ------------------------------------------------------------
+[proxy]
+enabled       = false
+type          = "socks5"    # "socks5", "http", or "mtproto"
+host          = ""          # proxy hostname or IP
+port          = 1080        # proxy port
+username      = ""          # optional auth username
+password      = ""          # optional auth password (MTProto: proxy secret)
+rdns          = true        # route DNS through proxy
+use_for_dc    = true        # inherit to [dc_proxy] when type=socks5/http
+use_for_email = true        # inherit to [dc_proxy] when type=socks5/http
+
+# ------------------------------------------------------------
+# [dc_proxy]  --  separate proxy for DELTA CHAT and EMAIL
+#
+# Only socks5 and http are supported here (not mtproto).
+# If this section is absent and [proxy] is a socks5/http type,
+# the relay automatically inherits [proxy] settings for DC/email.
+# Set this section explicitly when you need MTProto for Telegram
+# and SOCKS5 for Delta Chat / email at the same time.
+# ------------------------------------------------------------
+[dc_proxy]
+enabled       = false
+type          = "socks5"    # "socks5" or "http" only
+host          = ""          # proxy hostname or IP
+port          = 1080
+username      = ""          # optional
+password      = ""          # optional
+rdns          = true
+use_for_dc    = true        # apply to Delta Chat
+use_for_email = true        # apply to email relay
+
+
+# ------------------------------------------------------------
+# [email_relay]  –  plain SMTP relay (optional, independent of DC)
+#
+# When enabled, every relayed message is also sent by SMTP to
+# the addresses in target_emails.  You can use this alongside
+# Delta Chat or instead of it.
+#
+# IMPORTANT: use a separate, dedicated sender email address here.
+# You may use the same address as delta_chat.addr if you like.
+#
+# ssl_mode  –  how to connect to the SMTP server:
+#   "ssl"      – implicit TLS via SMTP_SSL, recommended, port 465
+#   "starttls" – STARTTLS upgrade, port 587
+#   "none"     – plain unencrypted (only for local/trusted servers)
+#
+# smtp_host  –  your SMTP server hostname.
+# smtp_port  –  25, 465, or 587 (match ssl_mode above).
+# smtp_user  –  the sender email address (login name).
+# smtp_password  –  password or App Password.
+# from_name  –  display name shown as the sender.
+# target_emails  –  list of recipient addresses.
+# ------------------------------------------------------------
+[email_relay]
+enabled       = false
+smtp_host     = "smtp.example.com"
+smtp_port     = 465
+smtp_user     = "relay-sender@example.com"   # dedicated relay sender address
+smtp_password = "your_smtp_password"
+ssl_mode      = "ssl"                         # "ssl", "starttls", or "none"
+target_emails = ["recipient@example.com"]
+from_name     = "Aardvark"

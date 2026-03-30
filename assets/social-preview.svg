@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-labelledby="stitle sdesc">
+  <title id="stitle">Aardvark — Telegram Relay</title>
+  <desc id="sdesc">Mirror Telegram channels to Delta Chat and e-mail. Cross-platform relay service.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0a1520"/>
+      <stop offset="100%" stop-color="#0d3040"/>
+    </linearGradient>
+    <filter id="blur" x="-30%" y="-30%"  width="160%" height="160%">
+      <feGaussianBlur stdDeviation="52"/>
+    </filter>
+  </defs>
+  <rect width="1280" height="640" fill="url(#bg)"/>
+  <!-- Large glow accents — bolder than the banner for link-preview thumbnails -->
+  <ellipse cx="220"  cy="180" rx="420" ry="280" fill="#2aabee" fill-opacity="0.24" filter="url(#blur)"/>
+  <ellipse cx="1060" cy="460" rx="420" ry="280" fill="#00c8a8" fill-opacity="0.20" filter="url(#blur)"/>
+  <ellipse cx="680"  cy="80"  rx="320" ry="200" fill="#3daa8a" fill-opacity="0.12" filter="url(#blur)"/>
+  <!-- Subtle horizontal accent line -->
+  <line x1="40" y1="420" x2="1240" y2="420" stroke="#00c8a8" stroke-opacity="0.12" stroke-width="1"/>
+  <!-- font-family: Arial first for good Latin proportions; Apple Symbols as fallback for → -->
+  <g font-family="Arial, Apple Symbols, sans-serif" text-anchor="middle">
+    <!-- Category badge -->
+    <rect x="492" y="105" width="296" height="40" rx="20" fill="#071018" fill-opacity="0.62" stroke="#00c8a8" stroke-opacity="0.50"/>
+    <text x="640" y="131" fill="#96c4d4" font-size="18" font-weight="700">Telegram → Delta Chat</text>
+    <!-- Title: codename large, then descriptor smaller below -->
+    <text x="640" y="248" fill="#f0f8ff" font-size="88" font-weight="800">Aardvark</text>
+    <text x="640" y="322" fill="#f0f8ff" font-size="52" font-weight="700">Telegram Relay</text>
+    <!-- Tagline -->
+    <text x="640" y="386" fill="#96c4d4" font-size="26">Mirror Telegram channels to Delta Chat and e-mail.</text>
+    <!-- Feature pills — group centred at x=640 (total 534 px) -->
+    <rect x="373" y="452" width="168" height="44" rx="22" fill="#071018" fill-opacity="0.62" stroke="#ffffff" stroke-opacity="0.22"/>
+    <text x="457"  y="480" fill="#f0f8ff" font-size="17" font-weight="700">Burst limiter</text>
+    <rect x="565" y="452" width="138" height="44" rx="22" fill="#071018" fill-opacity="0.62" stroke="#ffffff" stroke-opacity="0.22"/>
+    <text x="634"  y="480" fill="#f0f8ff" font-size="17" font-weight="700">Hot reload</text>
+    <rect x="727" y="452" width="178" height="44" rx="22" fill="#071018" fill-opacity="0.62" stroke="#ffffff" stroke-opacity="0.22"/>
+    <text x="816"  y="480" fill="#f0f8ff" font-size="17" font-weight="700">Proxy support</text>
+    <!-- Repo reference -->
+    <text x="640" y="576" fill="#96c4d4" font-size="16" fill-opacity="0.55">github.com/artur-bortsov/telegram-email-deltachat-relay</text>
+  </g>
+</svg>

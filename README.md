@@ -11,6 +11,8 @@ Aardvark is a Telegram relay service
 
 It runs as a background service on Linux, macOS, and Windows.
 
+> **Easy start on Windows:** [English](easy-start-windows-en.md) | [Русский](easy-start-windows-ru.md)
+
 ---
 
 ## What Aardvark does

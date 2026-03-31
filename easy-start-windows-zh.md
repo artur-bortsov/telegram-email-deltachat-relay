@@ -17,9 +17,8 @@
 
 1. 在浏览器中打开 <https://my.telegram.org/apps>
 2. 使用 Telegram 账号的手机号码登录
-3. 进入 **API development tools**
-4. 创建一个应用（名称任意，例如 "Aardvark"）
-5. 复制 **api_id**（数字）和 **api_hash**（32 位字符串）
+3. 创建一个应用（名称任意，例如 "Aardvark"）
+4. 复制 **api_id**（数字）和 **api_hash**（32 位字符串）
 
 ---
 

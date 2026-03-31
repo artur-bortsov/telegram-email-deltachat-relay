@@ -17,9 +17,8 @@ Cómo poner en marcha la retransmisión de canales de Telegram hacia Delta Chat 
 
 1. Abra <https://my.telegram.org/apps> en un navegador
 2. Inicie sesión con el número de teléfono de su cuenta de Telegram
-3. Vaya a **API development tools**
-4. Cree una aplicación (el nombre puede ser cualquiera, por ejemplo «Aardvark»)
-5. Copie el **api_id** (un número) y el **api_hash** (una cadena de 32 caracteres)
+3. Cree una aplicación (el nombre puede ser cualquiera, por ejemplo «Aardvark»)
+4. Copie el **api_id** (un número) y el **api_hash** (una cadena de 32 caracteres)
 
 ---
 

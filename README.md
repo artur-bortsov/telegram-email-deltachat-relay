@@ -275,9 +275,8 @@ At the end the wizard shows your config file path, log location, invite link fil
 Get them at <https://my.telegram.org/apps>:
 
 1. Sign in with your Telegram phone number
-2. Open "API development tools"
-3. Create a new application (any name, e.g. "Aardvark")
-4. Copy `api_id` (a number) and `api_hash` (a 32-character hex string)
+2. Create a new application (any name, e.g. "Aardvark")
+3. Copy `api_id` (a number) and `api_hash` (a 32-character hex string)
 
 ### First login and two-step verification
 

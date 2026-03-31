@@ -17,9 +17,8 @@ Telegram-Kanäle in wenigen Minuten an Delta Chat und/oder E-Mail weiterleiten.
 
 1. Öffnen Sie <https://my.telegram.org/apps> in einem Browser
 2. Melden Sie sich mit der Telefonnummer Ihres Telegram-Kontos an
-3. Wechseln Sie zu **API development tools**
-4. Erstellen Sie eine Anwendung (beliebiger Name, z. B. „Aardvark")
-5. Kopieren Sie die **api_id** (eine Zahl) und den **api_hash** (eine 32-stellige Zeichenfolge)
+3. Erstellen Sie eine Anwendung (beliebiger Name, z. B. „Aardvark“)
+4. Kopieren Sie die **api_id** (eine Zahl) und den **api_hash** (eine 32-stellige Zeichenfolge)
 
 ---
 

@@ -17,9 +17,8 @@ Get Telegram channels relayed to Delta Chat and/or e-mail in a few minutes.
 
 1. Open <https://my.telegram.org/apps> in a browser
 2. Sign in with your Telegram phone number
-3. Go to **API development tools**
-4. Create an application (any name works, e.g. "Aardvark")
-5. Copy the **api_id** (a number) and **api_hash** (a 32-character string)
+3. Create an application (any name works, e.g. "Aardvark")
+4. Copy the **api_id** (a number) and **api_hash** (a 32-character string)
 
 ---
 

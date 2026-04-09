@@ -28,6 +28,7 @@ Aardvark logs in to Telegram with your personal account credentials (MTProto) an
 - Remembers which messages it already relayed, so restarts never produce duplicates
 - Sends a "relay stopped" notice to Delta Chat channels when you remove them from the config
 - Reloads `config.toml` automatically while running — no restart needed for channel or burst changes
+- Automatically reconnects to Telegram if a channel goes silent for 6 hours, recovering from a known Telegram update-state drift without any service restart
 
 ---
 
@@ -611,6 +612,19 @@ This is usually a network timing issue.  Increase `album_window_seconds` in `con
 
 **Channel thumbnail (icon) not appearing**
 The thumbnail download requires Telethon to open a secondary connection to a different Telegram Data Center.  With an MTProto proxy this secondary connection often fails.  The relay retries on every startup.  Disabling the proxy (setting `proxy.enabled = false`) usually fixes this immediately.  If a proxy is required, try a different MTProto proxy server that supports media DC connections.
+
+**Messages stop arriving from a channel for several hours**
+Telegram's server can stop pushing updates for a specific channel to long-running clients (a known Telethon issue with update-state drift).  Aardvark detects this automatically: if all watched channels are silent for 6 hours, the service reconnects to Telegram, replays recent history, and resumes delivery — without any manual intervention.  You will see a `Watchdog: reconnect complete` entry in `relay.log` when this happens.
+
+If you notice the problem before the watchdog fires, restarting the service manually is sufficient:
+```bash
+# Linux
+sudo systemctl restart aardvark-relay
+# macOS
+launchctl kickstart -k "gui/$(id -u)/com.aardvark.relay"
+# Windows
+sc stop AardvarkRelay && sc start AardvarkRelay
+```
 
 **DC broadcast channels recreated / subscribers lost old channel**
 This can happen if the `deltachat_accounts/` directory was deleted during a reinstall (a bug present in early versions, now fixed).  Each recreation generates a new invite link.  Subscribers on the old channel must rejoin using the new link from `invite_links.txt`.  The current links are always in that file.

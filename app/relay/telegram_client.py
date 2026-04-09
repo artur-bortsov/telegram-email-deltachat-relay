@@ -13,6 +13,7 @@ import logging
 import os
 import shutil
 import tempfile
+import time
 from datetime import datetime, timezone
 from typing import Awaitable, Callable, Dict, List, Optional, Tuple
 
@@ -85,6 +86,13 @@ class TelegramMonitor:
         # correct A-caption, A-photo2, B-caption, B-photo2).
         # asyncio.Lock() is safe to create outside a coroutine on Python 3.10+.
         self._dispatch_lock = asyncio.Lock()
+        # Per-channel activity tracking for the staleness watchdog.
+        # Maps entity ID → monotonic timestamp of last received message.
+        self._last_activity: Dict[int, float] = {}
+        # Flag set to True while a watchdog-triggered reconnect is in progress.
+        # run_forever() uses this to loop back to run_until_disconnected() with
+        # the new client instead of exiting and triggering a full teardown.
+        self._reconnect_in_progress: bool = False
 
     # ------------------------------------------------------------------
     # Public API
@@ -180,17 +188,94 @@ class TelegramMonitor:
 
         await self._resolve_channels()
         self._register_event_handler()
+        # Initialise activity timestamps so the watchdog has a baseline.
+        self.reset_activity()
         await self._relay_history()
 
     async def run_forever(self) -> None:
-        """Block until the Telegram connection is dropped or disconnected."""
-        await self._client.run_until_disconnected()
+        """
+        Block until the Telegram connection is permanently stopped.
+
+        If a watchdog reconnect is in progress when run_until_disconnected()
+        returns, loop back and wait for the new client to be ready instead of
+        exiting (which would trigger a full service teardown).
+        """
+        while True:
+            await self._client.run_until_disconnected()
+            if not self._reconnect_in_progress:
+                # Normal stop() was called — exit cleanly.
+                break
+            # Watchdog reconnect in progress: new client is being set up.
+            # Spin-wait until reconnect() clears the flag and the new
+            # client is ready, then loop back to run_until_disconnected().
+            while self._reconnect_in_progress:
+                await asyncio.sleep(0.05)
+
+    def get_min_idle_seconds(self) -> float:
+        """
+        Return the shortest idle time (in seconds) across all watched channels.
+
+        If no activity has been recorded yet (e.g. right after startup), returns
+        0.0 so the watchdog does not trigger prematurely.
+        """
+        if not self._last_activity:
+            return 0.0
+        now = time.monotonic()
+        return min(now - t for t in self._last_activity.values())
+
+    def reset_activity(self) -> None:
+        """Mark all watched channels as active right now (called after reconnect)."""
+        now = time.monotonic()
+        for eid in self._channel_names:
+            self._last_activity[eid] = now
 
     async def stop(self) -> None:
         """Gracefully disconnect the Telegram client."""
+        # Ensure a pending reconnect flag does not block run_forever().
+        self._reconnect_in_progress = False
         if self._client and self._client.is_connected():
             await self._client.disconnect()
             logger.info("Telegram client disconnected")
+
+    async def reconnect(self) -> None:
+        """
+        Disconnect and reconnect the Telegram client, re-resolve channels,
+        re-register event handlers, and replay recent history.
+
+        Called by the staleness watchdog when no messages have been received
+        from any watched channel for an extended period.  This forces Telethon
+        to re-sync the update state (pts) with Telegram's servers.
+        """
+        logger.warning("Watchdog: initiating Telegram reconnect ...")
+        # Set flag BEFORE disconnect so run_forever() sees it when
+        # run_until_disconnected() returns and loops instead of exiting.
+        self._reconnect_in_progress = True
+        if self._client and self._client.is_connected():
+            await self._client.disconnect()
+            logger.info("Watchdog: old client disconnected")
+        # Re-create the client so Telethon rebuilds all internal update state.
+        proxy_param = self._build_telethon_proxy()
+        self._client = TelegramClient(
+            self._tg_cfg.session_name,
+            self._tg_cfg.api_id,
+            self._tg_cfg.api_hash,
+            **proxy_param,
+        )
+        await self._client.start(phone=self._tg_cfg.phone)
+        logger.info("Watchdog: Telegram client reconnected")
+        # Clear resolved state so channels are re-resolved cleanly.
+        self._entities.clear()
+        self._channel_names.clear()
+        self._identifier_to_eid.clear()
+        self._eid_to_identifier.clear()
+        await self._resolve_channels()
+        self._register_event_handler()
+        self.reset_activity()
+        await self._relay_history()
+        # Clear the flag AFTER the new client is fully ready so run_forever()
+        # can loop back to run_until_disconnected() with the new client.
+        self._reconnect_in_progress = False
+        logger.info("Watchdog: reconnect complete, history replayed")
 
     def get_channel_names(self) -> Dict[int, str]:
         """Return a copy of the resolved channel-ID → name mapping."""
@@ -541,6 +626,8 @@ class TelegramMonitor:
             # event.chat.id is the raw entity ID (without -100 prefix)
             chat = await event.get_chat()
             eid = chat.id if chat else event.chat_id
+            # Record activity for the watchdog.
+            self._last_activity[eid] = time.monotonic()
             channel_name = self._channel_names.get(eid, str(eid))
             msg = event.message
             grouped_id: Optional[int] = getattr(msg, "grouped_id", None)

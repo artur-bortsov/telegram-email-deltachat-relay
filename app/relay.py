@@ -672,16 +672,39 @@ async def _run_relay(initial_config: Config, config_path: str) -> None:
         # Windows: asyncio signal handler is only SIGINT (Ctrl-C)
         signal.signal(signal.SIGINT, lambda s, f: loop.call_soon_threadsafe(stop_event.set))
 
+    # --- Staleness watchdog ---
+    # If no watched channel delivers a message for this long, force a
+    # Telegram reconnect to re-sync the Telethon update state (pts).
+    _WATCHDOG_CHECK_INTERVAL = 5 * 60    # check every 5 minutes
+    _WATCHDOG_IDLE_THRESHOLD = 6 * 3600  # reconnect after 6 h of silence
+
+    async def _watchdog() -> None:
+        """Periodically check channel activity; reconnect Telegram if all channels are stale."""
+        while True:
+            await asyncio.sleep(_WATCHDOG_CHECK_INTERVAL)
+            idle = tg.get_min_idle_seconds()
+            if idle >= _WATCHDOG_IDLE_THRESHOLD:
+                logger.warning(
+                    "Watchdog: all watched channels idle for %.1f h "
+                    "-- forcing Telegram reconnect to re-sync update state.",
+                    idle / 3600,
+                )
+                try:
+                    await tg.reconnect()
+                except Exception:
+                    logger.exception("Watchdog: reconnect failed -- will retry next cycle")
+
     logger.info("Relay service is running.  Press Ctrl+C to stop.")
 
     # Run until Telegram disconnects or a shutdown signal is received
-    run_task    = asyncio.ensure_future(tg.run_forever())
-    stop_task   = asyncio.ensure_future(stop_event.wait())
-    watch_task  = asyncio.ensure_future(_watch_config())
-    invite_task = asyncio.ensure_future(_retry_pending_invite_links())
+    run_task      = asyncio.ensure_future(tg.run_forever())
+    stop_task     = asyncio.ensure_future(stop_event.wait())
+    watch_task    = asyncio.ensure_future(_watch_config())
+    invite_task   = asyncio.ensure_future(_retry_pending_invite_links())
+    watchdog_task = asyncio.ensure_future(_watchdog())
 
     _done, _pending = await asyncio.wait(
-        [run_task, stop_task, watch_task, invite_task],
+        [run_task, stop_task, watch_task, invite_task, watchdog_task],
         return_when=asyncio.FIRST_COMPLETED,
     )
     for task in _pending:

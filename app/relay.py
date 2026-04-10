@@ -553,7 +553,20 @@ async def _run_relay(initial_config: Config, config_path: str) -> None:
         proxy_cfg=state.config.proxy,
     )
     tg.set_message_callback(_on_message)
-    await tg.start()
+
+    # Startup timeout: if Telethon cannot connect within this window (e.g. network
+    # outage at boot time) the process exits so launchd/systemd can restart it later
+    # rather than hanging indefinitely inside client.start().
+    _STARTUP_TIMEOUT = 120  # seconds
+    try:
+        await asyncio.wait_for(tg.start(), timeout=_STARTUP_TIMEOUT)
+    except asyncio.TimeoutError:
+        logger.error(
+            "Startup: Telegram connection timed out after %ds "
+            "(network may be down). Exiting for automatic restart.",
+            _STARTUP_TIMEOUT,
+        )
+        sys.exit(1)
 
     # --- Helper: sync Telegram channel photo → DC channel ---
 
@@ -672,16 +685,75 @@ async def _run_relay(initial_config: Config, config_path: str) -> None:
         # Windows: asyncio signal handler is only SIGINT (Ctrl-C)
         signal.signal(signal.SIGINT, lambda s, f: loop.call_soon_threadsafe(stop_event.set))
 
-    # --- Staleness watchdog ---
-    # If no watched channel delivers a message for this long, force a
-    # Telegram reconnect to re-sync the Telethon update state (pts).
+    # ---------------------------------------------------------------------------
+    # Watchdog: comprehensive health checks every 5 minutes
+    # ---------------------------------------------------------------------------
     _WATCHDOG_CHECK_INTERVAL = 5 * 60    # check every 5 minutes
-    _WATCHDOG_IDLE_THRESHOLD = 6 * 3600  # reconnect after 6 h of silence
+    _WATCHDOG_IDLE_THRESHOLD = 6 * 3600  # reconnect after 6 h of channel silence
+    _DC_HEALTH_TIMEOUT       = 30        # seconds before DC is considered hung
+    # Telegram primary DC – used for network reachability check
+    _TG_DC1_HOST = "149.154.167.51"
+    _TG_DC1_PORT = 443
+
+    async def _check_network() -> bool:
+        """Return True when a TCP connection to Telegram DC1 can be established."""
+        _loop = asyncio.get_event_loop()
+        return await _loop.run_in_executor(
+            None, TelegramMonitor._tcp_reachable,
+            _TG_DC1_HOST, _TG_DC1_PORT, 5.0,
+        )
+
+    async def _check_dc_health() -> bool:
+        """
+        Return True when the Delta Chat RPC server responds within the timeout.
+        Calls get_all_broadcast_names() which is a lightweight RPC round-trip.
+        Returns True when DC is disabled (not a failure).
+        """
+        if dc_client is None:
+            return True
+        _loop = asyncio.get_event_loop()
+        try:
+            await asyncio.wait_for(
+                _loop.run_in_executor(None, dc_client.get_all_broadcast_names),
+                timeout=_DC_HEALTH_TIMEOUT,
+            )
+            return True
+        except asyncio.TimeoutError:
+            logger.error(
+                "Watchdog: Delta Chat RPC did not respond in %ds – DC is hung.",
+                _DC_HEALTH_TIMEOUT,
+            )
+            return False
+        except Exception:
+            logger.exception("Watchdog: Delta Chat health check failed")
+            return False
 
     async def _watchdog() -> None:
-        """Periodically check channel activity; reconnect Telegram if all channels are stale."""
+        """Comprehensive health check: network, Telegram connection, idle staleness, DC."""
         while True:
             await asyncio.sleep(_WATCHDOG_CHECK_INTERVAL)
+
+            # 1. Network reachability – skip all reconnect attempts when offline
+            network_ok = await _check_network()
+            if not network_ok:
+                logger.warning(
+                    "Watchdog: Telegram servers unreachable (network down?) "
+                    "-- skipping checks until next cycle."
+                )
+                continue
+
+            # 2. Telegram connection liveness – reconnect immediately if disconnected
+            if not tg.is_connected():
+                logger.warning(
+                    "Watchdog: Telegram client is not connected -- reconnecting now."
+                )
+                try:
+                    await tg.reconnect()
+                except Exception:
+                    logger.exception("Watchdog: Telegram reconnect failed -- will retry")
+                continue  # re-check DC on the next cycle after reconnect settles
+
+            # 3. Update-state staleness – reconnect after 6 h of silence
             idle = tg.get_min_idle_seconds()
             if idle >= _WATCHDOG_IDLE_THRESHOLD:
                 logger.warning(
@@ -692,7 +764,17 @@ async def _run_relay(initial_config: Config, config_path: str) -> None:
                 try:
                     await tg.reconnect()
                 except Exception:
-                    logger.exception("Watchdog: reconnect failed -- will retry next cycle")
+                    logger.exception("Watchdog: Telegram reconnect failed -- will retry")
+                continue
+
+            # 4. Delta Chat health – exit cleanly so launchd/systemd can restart
+            dc_ok = await _check_dc_health()
+            if not dc_ok:
+                logger.error(
+                    "Watchdog: Delta Chat is unresponsive. "
+                    "Exiting for automatic service restart."
+                )
+                sys.exit(1)
 
     logger.info("Relay service is running.  Press Ctrl+C to stop.")
 

@@ -223,6 +223,10 @@ class TelegramMonitor:
         now = time.monotonic()
         return min(now - t for t in self._last_activity.values())
 
+    def is_connected(self) -> bool:
+        """Return True if the Telethon client currently has an active MTProto connection."""
+        return bool(self._client and self._client.is_connected())
+
     def reset_activity(self) -> None:
         """Mark all watched channels as active right now (called after reconnect)."""
         now = time.monotonic()

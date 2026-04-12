@@ -25,9 +25,33 @@ Telegram-Kanäle in wenigen Minuten an Delta Chat und/oder E-Mail weiterleiten.
 ## Schritt 2 — E-Mail-Konto vorbereiten *(falls benötigt)*
 
 Wenn eine Zustellung über Delta Chat oder eine direkte E-Mail-Weiterleitung gewünscht ist,
-wird eine dedizierte E-Mail-Adresse benötigt, die ausschließlich für den Versand von
-Weiterleitungsnachrichten genutzt wird.  
-Es wird empfohlen, eine separate Adresse zu verwenden und nicht das persönliche Postfach.
+bereiten Sie eine **dedizierte E-Mail-Adresse** vor, die ausschließlich für den Versand
+von Weiterleitungsnachrichten genutzt wird (kein persönliches Postfach).
+
+Halten Sie folgende Informationen vor dem Start des Installers bereit:
+
+| Information | Beispiel |
+|---|---|
+| Absender-E-Mail-Adresse | `relay@example.com` |
+| Passwort oder **App-Passwort** | (siehe unten) |
+| **IMAP**-Server | `imap.gmail.com` |
+| **SMTP**-Server | `smtp.gmail.com` |
+
+**App-Passwort** — einige Anbieter erfordern es, wenn die Zwei-Schritt-Verifizierung (2FA) aktiviert ist:
+- **Gmail** — erstellen unter Google-Konto → Sicherheit → App-Passwörter
+- **Yandex** — zuerst IMAP in den E-Mail-Einstellungen aktivieren, dann App-Passwort erstellen, falls 2FA aktiv
+- **Outlook / Hotmail** — App-Passwort erforderlich bei aktiver 2FA
+- **Fastmail, Mailbox.org** — normales Passwort funktioniert
+
+Häufig verwendete Serveradressen:
+
+| Anbieter | IMAP | SMTP |
+|---|---|---|
+| Gmail | `imap.gmail.com` | `smtp.gmail.com` |
+| Yandex | `imap.yandex.ru` | `smtp.yandex.ru` |
+| Fastmail | `imap.fastmail.com` | `smtp.fastmail.com` |
+| Mailbox.org | `imap.mailbox.org` | `smtp.mailbox.org` |
+| Outlook/Hotmail | `outlook.office365.com` | `outlook.office365.com` |
 
 ---
 

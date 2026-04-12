@@ -24,9 +24,33 @@ Get Telegram channels relayed to Delta Chat and/or e-mail in a few minutes.
 
 ## Step 2 — Prepare an e-mail account *(if needed)*
 
-If you want Delta Chat or plain e-mail delivery, prepare a dedicated e-mail address
-that will be used only for sending relay messages.  
-A separate address is recommended — do not use a personal inbox.
+If you want Delta Chat or plain e-mail delivery, prepare a **dedicated e-mail address**
+that will be used only for sending relay messages (do not use a personal inbox).
+
+Have the following ready before running the installer:
+
+| What | Example |
+|---|---|
+| Sender email address | `relay@example.com` |
+| Email password or **App Password** | (see below) |
+| **IMAP server** hostname | `imap.gmail.com` |
+| **SMTP server** hostname | `smtp.gmail.com` |
+
+**App Passwords** are required by some providers when two-step verification (2FA) is on:
+- **Gmail** — create one at Google Account → Security → App passwords
+- **Yandex** — enable IMAP in mail settings first, then create an App Password if 2FA is on
+- **Outlook / Hotmail** — App Password required when 2FA is enabled
+- **Fastmail, Mailbox.org** — regular password works
+
+Common server hostnames:
+
+| Provider | IMAP | SMTP |
+|---|---|---|
+| Gmail | `imap.gmail.com` | `smtp.gmail.com` |
+| Yandex | `imap.yandex.ru` | `smtp.yandex.ru` |
+| Fastmail | `imap.fastmail.com` | `smtp.fastmail.com` |
+| Mailbox.org | `imap.mailbox.org` | `smtp.mailbox.org` |
+| Outlook/Hotmail | `outlook.office365.com` | `outlook.office365.com` |
 
 ---
 

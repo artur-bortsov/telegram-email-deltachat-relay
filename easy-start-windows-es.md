@@ -24,9 +24,34 @@ Cómo poner en marcha la retransmisión de canales de Telegram hacia Delta Chat 
 
 ## Paso 2 — Preparar una cuenta de correo electrónico *(si es necesario)*
 
-Si se desea entrega mediante Delta Chat o correo electrónico directo, prepare una dirección
-de correo dedicada exclusivamente al envío de mensajes de retransmisión.  
-Se recomienda usar una dirección separada y no el buzón personal.
+Si se desea entrega mediante Delta Chat o correo electrónico directo, prepare una
+**dirección de correo dedicada** exclusivamente al envío de mensajes de retransmisión
+(no use su buzón personal).
+
+Tenga a mano la siguiente información antes de ejecutar el instalador:
+
+| Dato | Ejemplo |
+|---|---|
+| Dirección de correo del remitente | `relay@example.com` |
+| Contraseña o **contraseña de aplicación** | (ver más abajo) |
+| Servidor **IMAP** | `imap.gmail.com` |
+| Servidor **SMTP** | `smtp.gmail.com` |
+
+**Contraseña de aplicación** — algunos proveedores la exigen cuando la verificación en dos pasos (2FA) está activada:
+- **Gmail** — crear en Cuenta de Google → Seguridad → Contraseñas de aplicaciones
+- **Yandex** — primero active IMAP en la configuración del correo; luego cree una contraseña de aplicación si 2FA está activado
+- **Outlook / Hotmail** — contraseña de aplicación obligatoria con 2FA
+- **Fastmail, Mailbox.org** — la contraseña normal funciona
+
+Servidores habituales:
+
+| Proveedor | IMAP | SMTP |
+|---|---|---|
+| Gmail | `imap.gmail.com` | `smtp.gmail.com` |
+| Yandex | `imap.yandex.ru` | `smtp.yandex.ru` |
+| Fastmail | `imap.fastmail.com` | `smtp.fastmail.com` |
+| Mailbox.org | `imap.mailbox.org` | `smtp.mailbox.org` |
+| Outlook/Hotmail | `outlook.office365.com` | `outlook.office365.com` |
 
 ---
 

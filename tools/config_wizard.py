@@ -3,8 +3,10 @@
 Aardvark configuration wizard.
 
 Guides the user step-by-step through setting up config.toml.
-Designed to be beginner-friendly: explains every field, validates
-input, and at the end shows how to control the service.
+Designed to be beginner-friendly: explains every field, shows default
+values (press Enter to accept), validates input, tests connectivity
+before and after proxy setup, and at the end shows how to control
+the service.
 """
 
 from __future__ import annotations
@@ -13,9 +15,10 @@ import argparse
 import getpass
 import platform
 import re
+import socket
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 try:
     import tomllib
@@ -43,6 +46,14 @@ def _info(text: str) -> None:
         print(f"  {line}")
 
 
+def _ok(text: str) -> None:
+    print(f"  \u2713 {text}")
+
+
+def _warn(text: str) -> None:
+    print(f"  \u26a0  {text}")
+
+
 def _load_existing(path: Path) -> Dict[str, Any]:
     if not path.exists():
         return {}
@@ -60,7 +71,11 @@ def _ask(
     secret: bool = False,
     allow_empty: bool = False,
 ) -> str:
-    """Prompt with optional default and validation; re-prompt on invalid input."""
+    """Prompt with optional default and validation; re-prompt on invalid input.
+
+    When *default* is set the prompt shows [default value].
+    The user can press Enter to accept it without retyping.
+    """
     while True:
         suffix = f" [{default}]" if default not in (None, "") else ""
         raw = (
@@ -76,14 +91,13 @@ def _ask(
         if validator is not None:
             err = validator(raw)
             if err is not None:
-                print(f"  ✗ {err}")
+                print(f"  \u2717 {err}")
                 continue
         return raw
 
 
 def _ask_yn(prompt: str, default: bool = True) -> bool:
     """Ask a yes/no question, return bool."""
-    default_str = "yes" if default else "no"
     while True:
         raw = input(f"{prompt} [{'YES/no' if default else 'yes/NO'}]: ").strip().lower()
         if not raw:
@@ -92,7 +106,112 @@ def _ask_yn(prompt: str, default: bool = True) -> bool:
             return True
         if raw in {"n", "no"}:
             return False
-        print("  ✗ Please enter yes or no.")
+        print("  \u2717 Please enter yes or no.")
+
+
+# ---------------------------------------------------------------------------
+# Connectivity checks
+# ---------------------------------------------------------------------------
+
+def _tcp_check(host: str, port: int, timeout: float = 5.0) -> bool:
+    """Return True when a TCP connection to host:port succeeds."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        result = s.connect_ex((host, port))
+        s.close()
+        return result == 0
+    except Exception:
+        return False
+
+
+# Telegram data-centres (try multiple for robustness)
+_TG_DCS: List[Tuple[str, int]] = [
+    ("149.154.167.51", 443),
+    ("149.154.167.91", 443),
+    ("91.108.4.167",   443),
+]
+
+
+def _check_telegram_direct() -> bool:
+    """Return True when any Telegram DC is reachable without a proxy."""
+    for host, port in _TG_DCS:
+        if _tcp_check(host, port):
+            return True
+    return False
+
+
+def _show_connectivity_results(
+    tg_ok: bool,
+    imap_host: str = "",
+    imap_ok: Optional[bool] = None,
+    smtp_host: str = "",
+    smtp_ok: Optional[bool] = None,
+) -> None:
+    print()
+    _info("Connectivity test (direct, without proxy):")
+    if tg_ok:
+        _ok("Telegram servers  \u2192  REACHABLE")
+    else:
+        _warn("Telegram servers  \u2192  UNREACHABLE (direct access may be blocked)")
+    if imap_ok is not None:
+        label = f"IMAP  {imap_host}:993"
+        if imap_ok:
+            _ok(f"{label}  \u2192  REACHABLE")
+        else:
+            _warn(f"{label}  \u2192  UNREACHABLE")
+    if smtp_ok is not None:
+        label = f"SMTP  {smtp_host}:465"
+        if smtp_ok:
+            _ok(f"{label}  \u2192  REACHABLE")
+        else:
+            _warn(f"{label}  \u2192  UNREACHABLE (try port 587 if 465 is blocked)")
+    print()
+
+
+def _connectivity_check_loop(
+    imap_host: str = "",
+    smtp_host: str = "",
+) -> Tuple[bool, Optional[bool], Optional[bool]]:
+    """
+    Test direct connectivity and allow the user to retry (e.g. after
+    enabling a system VPN or changing the network route).
+
+    Returns (tg_ok, imap_ok, smtp_ok).
+    imap_ok / smtp_ok are None when not applicable.
+    """
+    while True:
+        print()
+        _info("Testing direct connectivity \u2026 (this may take a few seconds)")
+        tg_ok = _check_telegram_direct()
+        imap_ok: Optional[bool] = None
+        smtp_ok: Optional[bool] = None
+        if imap_host:
+            imap_ok = _tcp_check(imap_host, 993)
+        if smtp_host:
+            smtp_ok = _tcp_check(smtp_host, 465)
+
+        _show_connectivity_results(tg_ok, imap_host, imap_ok, smtp_host, smtp_ok)
+
+        if _ask_yn(
+            "Test again? (e.g. after connecting a VPN or changing the route)",
+            default=False,
+        ):
+            continue
+        return tg_ok, imap_ok, smtp_ok
+
+
+def _show_proxy_check(host: str, port: int) -> bool:
+    """TCP-check the proxy and print the result. Returns True if reachable."""
+    print()
+    _info(f"Testing proxy {host}:{port} \u2026")
+    ok = _tcp_check(host, port)
+    if ok:
+        _ok(f"Proxy {host}:{port}  \u2192  REACHABLE")
+    else:
+        _warn(f"Proxy {host}:{port}  \u2192  UNREACHABLE (check the address, port, or proxy status)")
+    print()
+    return ok
 
 
 # ---------------------------------------------------------------------------
@@ -177,27 +296,34 @@ def _v_port(v: str) -> Optional[str]:
 def _ask_channels(existing: List[str]) -> List[str]:
     _info(
         "Enter the Telegram channels you want to mirror.\n"
+        "\n"
         "Accepted formats:\n"
-        "  @username          public channel or group\n"
+        "  @username          public channel or group (most common)\n"
         "  t.me/username      t.me link\n"
         "  1234567890         numeric channel ID\n"
         "\n"
+        "How to find channel names:\n"
+        "  Open the channel in Telegram and check the link, e.g.\n"
+        "  t.me/nexta_live  \u2192  enter @nexta_live\n"
+        "\n"
         "Tip: run  python app/relay.py --list-channels  to see all channels\n"
         "your account can access.\n"
-        "Enter one or more channels separated by commas."
+        "\n"
+        "Enter one channel or multiple separated by commas.\n"
+        "Example:  @channel1, @channel2"
     )
     default = ", ".join(existing) if existing else ""
     while True:
         raw = _ask("Channels", default=default or None)
         items = [x.strip() for x in raw.split(",") if x.strip()]
         if not items:
-            print("  ✗ Please enter at least one channel.")
+            print("  \u2717 Please enter at least one channel.")
             continue
         errors = [_v_channel(i) for i in items]
         if any(errors):
             for i, err in zip(items, errors):
                 if err:
-                    print(f"  ✗ {i!r}: {err}")
+                    print(f"  \u2717 {i!r}: {err}")
             continue
         return items
 
@@ -208,7 +334,7 @@ def _ask_emails(prompt: str, existing: List[str], required: bool = False) -> Lis
         raw = _ask(prompt, default=default or None, allow_empty=not required)
         if not raw:
             if required:
-                print("  ✗ Please enter at least one email address.")
+                print("  \u2717 Please enter at least one email address.")
                 continue
             return []
         items = [x.strip() for x in raw.split(",") if x.strip()]
@@ -216,7 +342,7 @@ def _ask_emails(prompt: str, existing: List[str], required: bool = False) -> Lis
         if any(errors):
             for t, err in zip(items, errors):
                 if err:
-                    print(f"  ✗ {t!r}: {err}")
+                    print(f"  \u2717 {t!r}: {err}")
             continue
         return items
 
@@ -233,8 +359,7 @@ def _write_config(path: Path, d: Dict[str, Any], install_dir: Optional[str] = No
     """
     Write config.toml.  When *install_dir* is provided, all file-path
     values that are relative are resolved to absolute paths under that
-    directory.  This prevents confusion when the relay or --login is run
-    from a different working directory (e.g. a Telegram Desktop folder).
+    directory.
     """
     dc = d["delta_chat"]
     em = d["email_relay"]
@@ -242,8 +367,6 @@ def _write_config(path: Path, d: Dict[str, Any], install_dir: Optional[str] = No
     rel = d["relay"]
     burst = d["burst"]
 
-    # Resolve relative file paths to absolute when install_dir is known.
-    # Use forward slashes so the paths are valid on all platforms.
     if install_dir:
         idir = Path(install_dir)
         def _abs(p: str) -> str:
@@ -255,10 +378,6 @@ def _write_config(path: Path, d: Dict[str, Any], install_dir: Optional[str] = No
         if dc.get("database_path"):
             dc = dict(dc)
             dc["database_path"] = _abs(dc["database_path"])
-        # Make session_name absolute so the .session file is always created in
-        # the install directory regardless of where --login or the relay is run from.
-        # Without this, the session lands in whichever directory happens to be
-        # current when Telethon is first called, causing re-auth on every reinstall.
         tg = dict(d["telegram"])
         tg["session_name"] = _abs(tg["session_name"])
         d = dict(d)
@@ -268,11 +387,9 @@ def _write_config(path: Path, d: Dict[str, Any], install_dir: Optional[str] = No
     em_enabled_str = "true" if em["enabled"] else "false"
     pr_enabled_str = "true" if pr["enabled"] else "false"
     burst_enabled_str = "true" if burst["enabled"] else "false"
-    auto_create_str = "true"
     pr_rdns_str = "true" if pr.get("rdns", True) else "false"
     pr_use_dc_str = "true" if pr.get("use_for_dc", True) else "false"
     pr_use_em_str = "true" if pr.get("use_for_email", True) else "false"
-    em_tls_str = "true" if em.get("use_tls", False) else "false"
 
     content = f"""\
 # Aardvark configuration – generated by config_wizard.py
@@ -304,7 +421,7 @@ database_path = "{dc['database_path']}"
 history_mode         = "{rel['history_mode']}"
 history_last_n       = {rel['history_last_n']}
 invite_links_file    = "{rel['invite_links_file']}"
-auto_create          = {auto_create_str}
+auto_create          = true
 max_media_size_mb    = {rel['max_media_size_mb']}
 state_file           = "{rel['state_file']}"
 album_mode           = "{rel['album_mode']}"
@@ -327,7 +444,6 @@ rdns          = {pr_rdns_str}
 use_for_dc    = {pr_use_dc_str}
 use_for_email = {pr_use_em_str}
 """
-    # Write [dc_proxy] only when explicitly configured
     dcp = d.get("dc_proxy")
     if dcp and dcp.get("enabled"):
         dcp_rdns = "true" if dcp.get("rdns", True) else "false"
@@ -363,11 +479,7 @@ from_name     = "{em['from_name']}"
 # Post-setup instructions
 # ---------------------------------------------------------------------------
 
-def _print_post_setup(
-    output: Path,
-    install_dir: Optional[str],
-    relay_mode: str,
-) -> None:
+def _print_post_setup(output: Path, install_dir: Optional[str], relay_mode: str) -> None:
     _section("Setup complete!")
     _info(f"Configuration written to: {output.resolve()}")
     print()
@@ -411,9 +523,9 @@ def _print_post_setup(
             "Service control (macOS)\n"
             "-----------------------\n"
             "  Status : launchctl print gui/$(id -u)/com.aardvark.relay\n"
-            "  Stop   : launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.aardvark.relay.plist\n"
-            "  Start  : launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.aardvark.relay.plist\n"
-            "  Logs   : tail -f \"$HOME/Library/Application Support/Aardvark/logs/relay.log\""
+            '  Stop   : launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.aardvark.relay.plist\n'
+            '  Start  : launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.aardvark.relay.plist\n'
+            '  Logs   : tail -f "$HOME/Library/Application Support/Aardvark/logs/relay.log"'
         )
     elif os_name == "Windows":
         _info(
@@ -437,8 +549,7 @@ def _print_post_setup(
         "Hot reload\n"
         "----------\n"
         "The service watches config.toml while running.\n"
-        "You can add or remove channels in the [channels] section\n"
-        "and they will take effect automatically within ~30 seconds.\n"
+        "Channel additions/removals and burst settings apply within ~30 seconds.\n"
         "Most other changes require a service restart."
     )
     print()
@@ -446,7 +557,7 @@ def _print_post_setup(
     print()
     _info(
         "First-time Telegram login\n"
-        "------------------------\n"
+        "-------------------------\n"
         "BEFORE starting the service, run this command once to authenticate\n"
         "interactively with Telegram (enter SMS code + Cloud Password if 2FA):\n"
         "\n"
@@ -473,45 +584,51 @@ def _print_post_setup(
 # ---------------------------------------------------------------------------
 
 def _wizard_telegram(tg: Dict[str, Any]) -> Dict[str, Any]:
-    _section("Step 1 of 7  –  Telegram credentials")
+    _section("Step 1 of 7  \u2013  Telegram credentials")
     _info(
         "Aardvark uses your personal Telegram account to read channels.\n"
         "\n"
         "API ID and API Hash\n"
         "-------------------\n"
-        "These are credentials for a 'Telegram application' registered under\n"
-        "your account.  They identify Aardvark to Telegram.\n"
+        "These identify the Aardvark application to Telegram servers.\n"
         "\n"
-        "How to get them:\n"
+        "How to get them (one-time setup):\n"
         "  1. Open https://my.telegram.org/apps in a browser\n"
         "  2. Sign in with your Telegram phone number\n"
         "  3. Click 'API development tools'\n"
-        "  4. Create a new application (any name, e.g. 'Aardvark')\n"
-        "  5. Copy api_id (a number) and api_hash (32-character hex string)\n"
+        "  4. Create a new application (any name, e.g. 'Aardvark relay')\n"
+        "  5. Copy:\n"
+        "       api_id   \u2192 a number, e.g. 12345678\n"
+        "       api_hash \u2192 a 32-character hex string, e.g. 0a1b2c3d...\n"
         "\n"
-        "These values are tied to your account and are private."
+        "These values are private. Never share them.\n"
+        "\n"
+        "Phone number\n"
+        "------------\n"
+        "Your Telegram phone number in international format.\n"
+        "Example: +12025551234  (include + and country code)\n"
+        "\n"
+        "Session name\n"
+        "------------\n"
+        "Name for the saved session file (no extension).\n"
+        "Default: 'aardvark'  \u2192 saves as aardvark.session\n"
+        "Change only if you run multiple Aardvark instances."
     )
     print()
     api_id = int(_ask("Telegram API ID", str(tg.get("api_id", "")) or None, _v_positive_int))
     api_hash = _ask("Telegram API hash (32 hex chars)", str(tg.get("api_hash", "")) or None, _v_api_hash)
-    phone = _ask("Telegram phone number", str(tg.get("phone", "")) or None, _v_phone)
+    phone = _ask("Telegram phone number (e.g. +12025551234)", str(tg.get("phone", "")) or None, _v_phone)
     session_name = _ask("Session name", str(tg.get("session_name", "aardvark")), _v_nonempty)
 
     print()
     _info(
-        "First login and two-step verification (2FA)\n"
-        "-------------------------------------------\n"
-        "BEFORE starting the service, run this command once to authenticate\n"
-        "interactively with Telegram:\n"
+        "First login note\n"
+        "----------------\n"
+        "After this wizard finishes, run once:\n"
         "  .venv/bin/python app/relay.py --config config.toml --login\n"
-        "\n"
-        "Telegram will send an SMS verification code to your phone.\n"
-        "Enter it when prompted.\n"
-        "If your account has a Cloud Password (2FA), you will also be\n"
-        "prompted for it right after the SMS code.\n"
-        "After one successful --login the session is saved to:\n"
-        "  <session_name>.session\n"
-        "The service can then start and run unattended."
+        "Telegram sends an SMS code to your phone; enter it when prompted.\n"
+        "If 2FA is enabled, also enter your Cloud Password.\n"
+        "The session is then saved and reused automatically."
     )
     return {
         "api_id": api_id,
@@ -522,70 +639,90 @@ def _wizard_telegram(tg: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _wizard_channels(ch: Dict[str, Any]) -> Dict[str, Any]:
-    _section("Step 2 of 7  –  Telegram channels to monitor")
+    _section("Step 2 of 7  \u2013  Telegram channels to monitor")
     existing = [str(v) for v in ch.get("watch", [])]
     watch = _ask_channels(existing)
     return {"watch": watch}
 
 
 def _wizard_relay_mode() -> str:
-    _section("Step 3 of 7  –  Relay destination")
+    _section("Step 3 of 7  \u2013  Relay destination")
     _info(
         "Choose where to forward Telegram messages:\n"
         "\n"
-        "  dc    – Delta Chat broadcast channels only\n"
-        "  email – plain email only\n"
-        "  both  – Delta Chat AND email\n"
+        "  dc    \u2013 Delta Chat broadcast channels only  (default)\n"
+        "  email \u2013 plain email only\n"
+        "  both  \u2013 Delta Chat AND email\n"
         "\n"
-        "Delta Chat is an encrypted messenger built on email.  Recipients\n"
-        "download the Delta Chat app and join your broadcast channels via\n"
-        "an invite link.  Messages appear like a chat.\n"
+        "Delta Chat is an encrypted messenger built on email.\n"
+        "Recipients download the free Delta Chat app and join your broadcast\n"
+        "channels via an invite link.  Messages appear like a chat.\n"
+        "Advantages: end-to-end encrypted, no phone number needed.\n"
         "\n"
-        "Plain email sends to standard email addresses via SMTP."
+        "Plain email sends to standard email addresses via SMTP.\n"
+        "No app needed \u2013 messages arrive as regular emails.\n"
+        "\n"
+        "Both modes are independent and can run simultaneously.\n"
+        "\n"
+        "Press Enter to accept the default [dc]."
     )
     print()
     while True:
         choice = input("Relay mode (dc / email / both) [dc]: ").strip().lower() or "dc"
         if choice in {"dc", "email", "both"}:
             return choice
-        print("  ✗ Enter dc, email, or both.")
+        print("  \u2717 Enter dc, email, or both.")
 
 
 def _wizard_delta_chat(dc: Dict[str, Any]) -> Dict[str, Any]:
-    _section("Step 4a of 7  –  Delta Chat email account")
+    _section("Step 4a of 7  \u2013  Delta Chat email account")
     _info(
-        "Delta Chat uses email as its transport layer.  Aardvark needs a\n"
-        "dedicated sender email account to post messages into Delta Chat\n"
-        "broadcast channels.\n"
+        "Delta Chat uses email as its transport (IMAP + SMTP).\n"
+        "Aardvark needs a dedicated sender email account.\n"
         "\n"
-        "IMPORTANT: use a separate, dedicated email address here.\n"
+        "IMPORTANT: use a separate, dedicated email address.\n"
         "Do not use your personal inbox.\n"
-        "Suggested: create a free account at Fastmail, Mailbox.org, or similar.\n"
-        "Gmail works but requires an 'App Password' when 2FA is enabled.\n"
+        "Suggested: Fastmail, Mailbox.org, or any IMAP/SMTP provider.\n"
         "\n"
-        "This address will appear as the sender of all forwarded messages.\n"
-        "Recipients join the channel using an invite link, not by emailing it.\n"
+        "Password / App Password\n"
+        "-----------------------\n"
+        "Some providers require an application-specific password:\n"
+        "  Gmail       \u2192 App Password required when 2FA is on\n"
+        "              (Google Account \u2192 Security \u2192 App passwords)\n"
+        "  Yandex      \u2192 enable IMAP in mail settings first;\n"
+        "              use account password or App Password if 2FA is on\n"
+        "  Outlook     \u2192 App Password if 2FA is enabled\n"
+        "  Fastmail, Mailbox.org \u2192 regular password works\n"
         "\n"
-        "You can reuse the same address for the plain email relay below."
+        "IMAP and SMTP server hostnames\n"
+        "------------------------------\n"
+        "Usually auto-detected.  Enter only if auto-detect fails.\n"
+        "Common values:\n"
+        "  Gmail:          imap.gmail.com   /  smtp.gmail.com\n"
+        "  Yandex:         imap.yandex.ru   /  smtp.yandex.ru\n"
+        "  Fastmail:       imap.fastmail.com/  smtp.fastmail.com\n"
+        "  Mailbox.org:    imap.mailbox.org /  smtp.mailbox.org\n"
+        "  Outlook/Hotmail:outlook.office365.com (both IMAP and SMTP)"
     )
     print()
-    addr = _ask("Delta Chat sender email address",
-                str(dc.get("addr", "")) or None, _v_email)
+    addr = _ask("Sender email address", str(dc.get("addr", "")) or None, _v_email)
     mail_pw = _ask("Email password or App Password", None, _v_nonempty, secret=True)
-    database_path = _ask("Delta Chat database path",
-                         str(dc.get("database_path", "deltachat.db")), _v_nonempty)
+    database_path = _ask(
+        "Delta Chat database filename",
+        str(dc.get("database_path", "deltachat.db")), _v_nonempty,
+    )
     print()
     _info(
-        "Server settings\n"
-        "---------------\n"
-        "For most providers (Gmail, Fastmail, etc.) the server names are\n"
-        "detected automatically.  Press Enter to skip unless you need to\n"
-        "override them (e.g. for self-hosted or non-standard servers)."
+        "IMAP / SMTP overrides  (press Enter to skip and use auto-detect)"
     )
-    mail_server = _ask("IMAP server (leave blank for auto-detect)",
-                       str(dc.get("mail_server", "")) or None, allow_empty=True)
-    send_server = _ask("SMTP server (leave blank for auto-detect)",
-                       str(dc.get("send_server", "")) or None, allow_empty=True)
+    mail_server = _ask(
+        "IMAP server hostname (blank = auto-detect)",
+        str(dc.get("mail_server", "")) or None, allow_empty=True,
+    )
+    send_server = _ask(
+        "SMTP server hostname (blank = auto-detect)",
+        str(dc.get("send_server", "")) or None, allow_empty=True,
+    )
     return {
         "enabled": True,
         "addr": addr,
@@ -597,37 +734,32 @@ def _wizard_delta_chat(dc: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _wizard_email_relay(em: Dict[str, Any], dc_addr: str = "") -> Dict[str, Any]:
-    _section("Step 4b of 7  –  Plain email relay")
+    _section("Step 4b of 7  \u2013  Plain email relay")
     _info(
-        "The plain email relay sends forwarded messages to regular email\n"
-        "addresses via SMTP.  This is independent of Delta Chat.\n"
+        "Forwards Telegram messages to regular email addresses via SMTP.\n"
         "\n"
-        "IMPORTANT: use a separate, dedicated sender email address.\n"
-        "Do not use your personal inbox.\n"
+        "IMPORTANT: use a dedicated sender address, not your personal inbox.\n"
+        "\n"
+        "SSL mode:\n"
+        "  ssl      \u2013 implicit TLS, port 465  (recommended)\n"
+        "  starttls \u2013 STARTTLS upgrade, port 587\n"
+        "  none     \u2013 plain (only for local/trusted servers)\n"
+        "\n"
+        "Password: same rules as Delta Chat \u2013 use App Password if 2FA is on."
     )
     if dc_addr:
-        _info(
-            f"You may reuse the Delta Chat address: {dc_addr}\n"
-            "(set smtp_user to the same address)"
-        )
+        _info(f"\nYou may reuse the Delta Chat address: {dc_addr}")
     print()
 
     smtp_host = _ask("SMTP server hostname", str(em.get("smtp_host", "")) or None, _v_nonempty)
-    print()
-    _info(
-        "SSL mode – how to connect to the SMTP server:\n"
-        "  ssl      – implicit TLS, port 465 (recommended)\n"
-        "  starttls – STARTTLS upgrade, port 587\n"
-        "  none     – plain (only for trusted local servers)"
-    )
     ssl_mode = _ask("SSL mode", str(em.get("ssl_mode", "ssl")), _v_ssl_mode)
     default_port = "465" if ssl_mode == "ssl" else ("587" if ssl_mode == "starttls" else "25")
     smtp_port = int(_ask("SMTP port", str(em.get("smtp_port", default_port)), _v_port))
-
-    smtp_user = _ask("Sender email address (SMTP login)",
-                     str(em.get("smtp_user", dc_addr)) or None, _v_email)
-    smtp_password = _ask("SMTP password or App Password",
-                         None, _v_nonempty, secret=True)
+    smtp_user = _ask(
+        "Sender email address (SMTP login)",
+        str(em.get("smtp_user", dc_addr)) or None, _v_email,
+    )
+    smtp_password = _ask("SMTP password or App Password", None, _v_nonempty, secret=True)
     from_name = _ask("Sender display name", str(em.get("from_name", "Aardvark")), _v_nonempty)
     existing_targets = [str(v) for v in em.get("target_emails", [])]
     if em.get("target_email"):
@@ -652,135 +784,186 @@ def _wizard_proxy(
     pr: Dict[str, Any],
     dc_pr: Dict[str, Any],
     relay_mode: str,
+    imap_host: str = "",
+    smtp_host: str = "",
 ) -> Dict[str, Any]:
     """
+    Tests direct connectivity first, then optionally configures proxies.
     Returns a dict with keys 'proxy' and optionally 'dc_proxy'.
-    The caller stores both in the data dict for _write_config.
     """
-    _section("Step 5 of 7  -  Proxy (optional)")
+    _section("Step 5 of 7  \u2013  Network connectivity and proxy (optional)")
+
     _info(
-        "PROXY ARCHITECTURE - IMPORTANT\n"
-        "==============================\n"
-        "Aardvark has TWO separate proxy settings:\n"
+        "Aardvark will now test whether Telegram and your email servers are\n"
+        "reachable directly (without a proxy).\n"
         "\n"
-        "  [proxy]    - Telegram connections ONLY\n"
-        "    Supports: socks5, http, mtproto\n"
-        "    MTProto is built into Telegram - no extra packages.\n"
-        "    SOCKS5/HTTP require:  pip install PySocks\n"
-        "\n"
-        "  [dc_proxy] - Delta Chat and email relay ONLY\n"
-        "    Supports: socks5 or http  (NOT mtproto - that is Telegram-only!)\n"
-        "    Needed separately when Telegram uses MTProto.\n"
+        "If all connections show REACHABLE, you likely do not need a proxy.\n"
+        "If some fail, a proxy or VPN may be required.\n"
+        "Tip: if you just enabled a VPN, you can re-test after connecting."
+    )
+
+    # --- Direct connectivity check with re-test loop ---
+    tg_direct_ok, imap_ok, smtp_ok = _connectivity_check_loop(
+        imap_host=imap_host if relay_mode in {"dc", "both"} else "",
+        smtp_host=smtp_host if relay_mode in {"email", "both"} else "",
+    )
+
+    if tg_direct_ok and (imap_ok is None or imap_ok) and (smtp_ok is None or smtp_ok):
+        _info("All connections reachable directly. A proxy is probably not needed.")
+    else:
+        _info("Some connections failed. A proxy may help.")
+
+    _info(
+        "\nPROXY ARCHITECTURE\n"
+        "==================\n"
+        "  [proxy]    \u2013 for Telegram ONLY  (socks5 / http / mtproto)\n"
+        "  [dc_proxy] \u2013 for Delta Chat and email ONLY  (socks5 / http)\n"
         "\n"
         "Common setups:\n"
-        "  A) Telegram blocked, MTProto proxy + DC needs SOCKS5:\n"
-        "       [proxy]    type=mtproto   (for Telegram)\n"
-        "       [dc_proxy] type=socks5   (for Delta Chat / email)\n"
-        "  B) Everything goes through the same SOCKS5 proxy:\n"
-        "       [proxy] type=socks5, use_for_dc=true, use_for_email=true\n"
-        "       (no [dc_proxy] needed - it is auto-inherited)\n"
-        "  C) Only Telegram needs a proxy, DC connects directly:\n"
-        "       [proxy] type=mtproto or socks5, use_for_dc=false"
+        "  A) MTProto for Telegram + SOCKS5 for DC/email:\n"
+        "       [proxy] type=mtproto   +   [dc_proxy] type=socks5\n"
+        "  B) Same SOCKS5 for everything (e.g. Karing / Clash on localhost):\n"
+        "       [proxy] type=socks5, use_for_dc=true  (no [dc_proxy] needed)\n"
+        "  C) Only Telegram needs a proxy:\n"
+        "       [proxy] type=socks5, use_for_dc=false"
     )
     print()
 
-    # ---- Telegram proxy ----
+    _no_proxy_result: Dict[str, Any] = {
+        "proxy": {
+            "enabled": False, "type": "socks5", "host": "", "port": 1080,
+            "username": "", "password": "", "rdns": True,
+            "use_for_dc": False, "use_for_email": False,
+        },
+        "dc_proxy": None,
+    }
+
     if not _ask_yn("Enable proxy for Telegram?", default=bool(pr.get("enabled", False))):
-        return {
-            "proxy": {
-                "enabled": False, "type": "socks5", "host": "", "port": 1080,
-                "username": "", "password": "", "rdns": True,
-                "use_for_dc": False, "use_for_email": False,
-            },
-            "dc_proxy": None,
-        }
+        return _no_proxy_result
 
-    ptype = _ask("Telegram proxy type", str(pr.get("type", "socks5")), _v_proxy_type)
-    host  = _ask("Proxy host", str(pr.get("host", "")) or None, _v_nonempty)
-    port  = int(_ask("Proxy port", str(pr.get("port", 1080 if ptype != "mtproto" else 443)), _v_port))
+    # --- Telegram proxy details ---
+    while True:
+        _info(
+            "Proxy type:\n"
+            "  socks5  \u2013 SOCKS5 proxy (also works for DC/email when shared)\n"
+            "  http    \u2013 HTTP CONNECT proxy (also works for DC/email)\n"
+            "  mtproto \u2013 Telegram MTProto proxy (Telegram only; no extra packages)"
+        )
+        ptype = _ask("Telegram proxy type", str(pr.get("type", "socks5")), _v_proxy_type)
+        host  = _ask("Proxy host or IP address", str(pr.get("host", "")) or None, _v_nonempty)
+        default_port = "443" if ptype == "mtproto" else "1080"
+        port  = int(_ask(f"Proxy port", str(pr.get("port", default_port)), _v_port))
 
-    if ptype == "mtproto":
-        _info("MTProto: enter the proxy secret (hex or base64 string) in the password field.")
-        password = _ask("Proxy secret", str(pr.get("password", "")) or None, _v_nonempty)
-        username = ""
-    else:
-        username = _ask("Proxy username (blank for none)", str(pr.get("username", "")), allow_empty=True)
-        password = _ask("Proxy password (blank for none)", str(pr.get("password", "")), allow_empty=True)
+        if ptype == "mtproto":
+            _info(
+                "MTProto secret\n"
+                "--------------\n"
+                "A long hex or base64 string provided by the proxy operator.\n"
+                "Leave username blank for MTProto proxies."
+            )
+            password = _ask("Proxy secret (hex or base64)", str(pr.get("password", "")) or None, _v_nonempty)
+            username = ""
+        else:
+            username = _ask("Proxy username (Enter if none)", str(pr.get("username", "")), allow_empty=True)
+            password = _ask("Proxy password (Enter if none)", str(pr.get("password", "")), allow_empty=True)
 
-    rdns = True if ptype == "mtproto" else _ask_yn("Route DNS through proxy? (recommended)", True)
+        rdns = True if ptype == "mtproto" else _ask_yn("Route DNS through proxy? (recommended)", True)
 
-    tg_proxy = {
+        proxy_ok = _show_proxy_check(host, port)
+        if proxy_ok:
+            break
+        if not _ask_yn("Proxy is unreachable. Re-enter proxy details?", default=True):
+            _warn("Continuing. Edit config.toml later to fix the proxy.")
+            break
+
+    tg_proxy: Dict[str, Any] = {
         "enabled": True, "type": ptype, "host": host, "port": port,
         "username": username, "password": password, "rdns": rdns,
         "use_for_dc": False, "use_for_email": False,
     }
 
-    # ---- DC / email proxy ----
+    # --- DC / email proxy ---
     dc_proxy_result: Optional[Dict[str, Any]] = None
+
     if ptype == "mtproto":
         print()
         _info(
-            "MTProto is Telegram-only.  Delta Chat and email relay cannot\n"
-            "use MTProto.  If DC/email also need a proxy, configure a\n"
-            "separate SOCKS5 proxy in [dc_proxy] now."
+            "MTProto is Telegram-only.  Delta Chat and email relay cannot use\n"
+            "MTProto.  Configure a separate SOCKS5/HTTP proxy for DC/email if needed."
         )
         needs_dc_proxy = False
         if relay_mode in {"dc", "both"}:
-            needs_dc_proxy = _ask_yn("Does Delta Chat also need a SOCKS5 proxy?",
-                                    default=bool(dc_pr.get("enabled", False)))
+            needs_dc_proxy = _ask_yn(
+                "Does Delta Chat also need a SOCKS5/HTTP proxy?",
+                default=bool(dc_pr.get("enabled", False)),
+            )
         if not needs_dc_proxy and relay_mode in {"email", "both"}:
-            needs_dc_proxy = _ask_yn("Does the email relay also need a SOCKS5 proxy?",
-                                    default=bool(dc_pr.get("enabled", False)))
+            needs_dc_proxy = _ask_yn(
+                "Does the email relay also need a SOCKS5/HTTP proxy?",
+                default=bool(dc_pr.get("enabled", False)),
+            )
+
         if needs_dc_proxy:
-            dc_host = _ask("SOCKS5 proxy host for DC/email",
-                          str(dc_pr.get("host", "")) or None, _v_nonempty)
-            dc_port = int(_ask("SOCKS5 proxy port",
-                              str(dc_pr.get("port", 1080)), _v_port))
-            dc_user = _ask("SOCKS5 username (blank for none)",
-                          str(dc_pr.get("username", "")), allow_empty=True)
-            dc_pass = _ask("SOCKS5 password (blank for none)",
-                          str(dc_pr.get("password", "")), allow_empty=True)
-            dc_rdns = _ask_yn("Route DNS through DC proxy?", True)
+            while True:
+                dc_ptype = _ask(
+                    "Proxy type for DC/email (socks5 or http)",
+                    str(dc_pr.get("type", "socks5")),
+                    lambda v: None if v in {"socks5", "http"} else "enter socks5 or http",
+                )
+                dc_host = _ask("Proxy host for DC/email", str(dc_pr.get("host", "")) or None, _v_nonempty)
+                dc_port = int(_ask("Proxy port", str(dc_pr.get("port", 1080)), _v_port))
+                dc_user = _ask("Proxy username (Enter if none)", str(dc_pr.get("username", "")), allow_empty=True)
+                dc_pass = _ask("Proxy password (Enter if none)", str(dc_pr.get("password", "")), allow_empty=True)
+                dc_rdns = _ask_yn("Route DNS through DC proxy?", True)
+
+                dc_proxy_ok = _show_proxy_check(dc_host, dc_port)
+                if dc_proxy_ok:
+                    break
+                if not _ask_yn("DC proxy unreachable. Re-enter?", default=True):
+                    _warn("Continuing. Edit config.toml later to fix the DC proxy.")
+                    break
+
             dc_proxy_result = {
-                "enabled": True, "type": "socks5",
+                "enabled": True, "type": dc_ptype,
                 "host": dc_host, "port": dc_port,
-                "username": dc_user, "password": dc_pass,
-                "rdns": dc_rdns,
+                "username": dc_user, "password": dc_pass, "rdns": dc_rdns,
                 "use_for_dc": relay_mode in {"dc", "both"},
                 "use_for_email": relay_mode in {"email", "both"},
             }
     else:
-        # SOCKS5 / HTTP: ask if DC/email should share it
+        # SOCKS5/HTTP: ask if DC/email should share it
         if relay_mode in {"dc", "both"}:
-            tg_proxy["use_for_dc"] = _ask_yn(
-                "Also use this proxy for Delta Chat connections?", True
-            )
+            tg_proxy["use_for_dc"] = _ask_yn("Also use this proxy for Delta Chat connections?", True)
         if relay_mode in {"email", "both"}:
-            tg_proxy["use_for_email"] = _ask_yn(
-                "Also use this proxy for email relay connections?", True
-            )
+            tg_proxy["use_for_email"] = _ask_yn("Also use this proxy for email relay connections?", True)
 
     return {"proxy": tg_proxy, "dc_proxy": dc_proxy_result}
 
 
 def _wizard_relay_settings(rel: Dict[str, Any]) -> Dict[str, Any]:
-    _section("Step 6 of 7  –  Relay settings")
+    _section("Step 6 of 7  \u2013  Relay settings")
     _info(
-        "history_mode  – what to replay when the service starts:\n"
-        "  last_n      – the last N messages from each channel\n"
-        "  since_today – all messages since midnight UTC today"
+        "history_mode  \u2013  what to replay when the service starts:\n"
+        "  last_n       \u2013 the last N messages (default: 3)\n"
+        "  since_today  \u2013 all messages since midnight UTC today\n"
+        "\n"
+        "max_media_size_mb  \u2013  files larger than this are skipped and replaced\n"
+        "  by a placeholder text.  Default: 10 MB.  0 = relay all sizes.\n"
+        "\n"
+        "Press Enter on each field to accept the default shown in [brackets]."
     )
+    print()
     history_mode = _ask(
         "History mode",
         str(rel.get("history_mode", "last_n")),
         lambda v: None if v in {"last_n", "since_today"} else "enter last_n or since_today",
     )
     history_last_n = int(_ask(
-        "Number of messages to replay on first start",
+        "Messages to replay on first start",
         str(rel.get("history_last_n", 3)), _v_positive_int,
     ))
     max_media = float(_ask(
-        "Max media size in MB (0 = unlimited)",
+        "Max media size in MB (0 = all sizes)",
         str(rel.get("max_media_size_mb", 10)), _v_float_ge0,
     ))
     return {
@@ -795,14 +978,16 @@ def _wizard_relay_settings(rel: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _wizard_burst(burst: Dict[str, Any]) -> Dict[str, Any]:
-    _section("Step 7 of 7  –  Burst limiter")
+    _section("Step 7 of 7  \u2013  Burst limiter")
     _info(
-        "The burst limiter prevents a channel that posts many text messages\n"
-        "in rapid succession from flooding your Delta Chat / email inbox.\n"
+        "Prevents rapid-fire text posts from flooding your inbox.\n"
         "\n"
-        "When a channel sends >= threshold messages within window_seconds,\n"
-        "the messages are held and combined into a single forwarded message\n"
-        "after window_seconds of silence.  Media messages bypass this."
+        "When >= threshold messages arrive within window_seconds, they are\n"
+        "buffered and combined into one message after the window expires.\n"
+        "Media messages always bypass the limiter.\n"
+        "\n"
+        "Defaults: 20 messages / 300 seconds (5 minutes).\n"
+        "Press Enter three times to accept all defaults."
     )
     print()
     if not _ask_yn("Enable burst limiter?", default=bool(burst.get("enabled", True))):
@@ -831,7 +1016,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--install-dir", default=None,
-        help="Install directory path (used in post-setup instructions)",
+        help="Install directory path (used to resolve absolute paths)",
     )
     args = parser.parse_args()
     output = Path(args.output)
@@ -842,31 +1027,39 @@ def main() -> None:
     _hr("=")
     print()
     _info(
-        "This wizard will create or update config.toml.\n"
-        "Press Enter to keep the current value shown in [brackets].\n"
-        "Passwords are not shown while you type."
+        "This wizard creates or updates config.toml.\n"
+        "\n"
+        "For every field, the default is shown in [brackets].\n"
+        "Press Enter to accept a default without retyping it.\n"
+        "Passwords are hidden while you type.\n"
+        "\n"
+        "Prepare the following before starting:\n"
+        "  \u2713 Telegram API ID and API hash  (from my.telegram.org/apps)\n"
+        "  \u2713 Telegram phone number         (international format, e.g. +12025551234)\n"
+        "  \u2713 Dedicated sender email address (not your personal inbox)\n"
+        "  \u2713 Email password or App Password (required by some providers with 2FA)\n"
+        "  \u2713 IMAP server hostname           (e.g. imap.gmail.com)\n"
+        "  \u2713 SMTP server hostname           (e.g. smtp.gmail.com)\n"
+        "  \u2713 Telegram channel names         (@username or t.me/link)"
     )
     if output.exists():
         print()
         _info(f"Existing config found: {output.resolve()}")
-        _info("Your existing values will be used as defaults.")
+        _info("Existing values will be shown as defaults.")
 
     tg_data = _wizard_telegram(existing.get("telegram", {}))
     ch_data = _wizard_channels(existing.get("channels", {}))
     relay_mode = _wizard_relay_mode()
 
-    # Delta Chat
     dc_existing = existing.get("delta_chat", {})
     if relay_mode in {"dc", "both"}:
         dc_data = _wizard_delta_chat(dc_existing)
     else:
-        # Email-only: explicitly disable DC
         dc_data = {
             "enabled": False, "addr": "", "mail_pw": "",
             "database_path": "deltachat.db", "mail_server": "", "send_server": "",
         }
 
-    # Email relay
     em_existing = existing.get("email_relay", {})
     if relay_mode in {"email", "both"}:
         em_data = _wizard_email_relay(em_existing, dc_addr=dc_data.get("addr", ""))
@@ -877,14 +1070,20 @@ def main() -> None:
             "target_emails": [], "from_name": "Aardvark", "use_tls": False,
         }
 
+    # Use configured mail/smtp hosts for connectivity check in the proxy step
+    imap_host = dc_data.get("mail_server", "") or ""
+    smtp_host  = em_data.get("smtp_host", "") or ""
+
     pr_result = _wizard_proxy(
         existing.get("proxy", {}),
         existing.get("dc_proxy", {}),
         relay_mode,
+        imap_host=imap_host,
+        smtp_host=smtp_host,
     )
     pr_data    = pr_result["proxy"]
     dc_pr_data = pr_result.get("dc_proxy")
-    rel_data = _wizard_relay_settings(existing.get("relay", {}))
+    rel_data   = _wizard_relay_settings(existing.get("relay", {}))
     burst_data = _wizard_burst(existing.get("burst", {}))
 
     data = {
@@ -900,7 +1099,7 @@ def main() -> None:
 
     _write_config(output, data, install_dir=args.install_dir)
     print()
-    _info(f"✓ Config written to {output.resolve()}")
+    _info(f"\u2713 Config written to {output.resolve()}")
 
     _print_post_setup(output, args.install_dir, relay_mode)
 

@@ -94,6 +94,38 @@ cd telegram-email-deltachat-relay
   right-click on an empty area, and choose **Open in Terminal**
   (or **Open PowerShell window here** / **Open Command Prompt here**).
 
+### Before you run the installer — what to prepare
+
+Have the following information ready.  The setup wizard will ask for it interactively.
+
+**Telegram**
+- API ID and API hash from <https://my.telegram.org/apps>
+- Your Telegram phone number (international format, e.g. `+12025551234`)
+
+**Email account for Delta Chat / email relay** *(skip if not using)*
+- A **dedicated** sender email address (do not use your personal inbox)
+- The email **password** or an **App Password** — required by providers when 2FA is enabled:
+  - Gmail: create at Google Account → Security → App passwords
+  - Yandex: enable IMAP in mail settings, then create App Password if 2FA is on
+  - Outlook: App Password required when 2FA is enabled
+  - Fastmail, Mailbox.org: regular password works
+- **IMAP server** hostname (e.g. `imap.gmail.com`) — used for Delta Chat
+- **SMTP server** hostname (e.g. `smtp.gmail.com`) — used for email relay
+
+Common server hostnames:
+
+| Provider | IMAP | SMTP |
+| Gmail | `imap.gmail.com` | `smtp.gmail.com` |
+| Yandex | `imap.yandex.ru` | `smtp.yandex.ru` |
+| Fastmail | `imap.fastmail.com` | `smtp.fastmail.com` |
+| Mailbox.org | `imap.mailbox.org` | `smtp.mailbox.org` |
+| Outlook/Hotmail | `outlook.office365.com` | `outlook.office365.com` |
+
+**Telegram channels to mirror**
+- The channel name(s) in `@username` or `t.me/link` format
+
+---
+
 ### Step 3 — Run the installer for your platform
 
 **Linux:**
@@ -575,18 +607,59 @@ On Windows, replace `.venv/bin/` with `.venv\Scripts\`.
 
 ---
 
-## Windows maintenance mode
+## Running the installer: source folder vs. install directory
 
-On Windows, if you run `install.cmd` **from inside** `C:\Program Files\Aardvark\installers\windows\`, the installer detects this and switches to **maintenance / health check mode** instead of doing a full reinstall.  It checks:
+Where you run the installer from determines what it does.
 
-- Python venv integrity
-- `config.toml` completeness (offers wizard if broken)
-- Telegram session validity (detects expired/corrupted sessions and offers to re-authenticate)
-- Service status (starts or restarts if needed)
-- Connection status for Telegram, Delta Chat, and email relay
-- Delta Chat invite links (waits up to 45 s and displays them)
+### From the source / download folder *(normal use — updates the service)*
 
-To **update** the installation, always run `install.cmd` from the **source/download folder**, not from the install directory.
+This is the standard way to install or update Aardvark:
+
+```bash
+# Linux — run from the downloaded project folder
+sudo bash installers/linux/install.sh
+
+# macOS — run from the downloaded project folder
+bash installers/macos/install.sh
+
+# Windows — double-click or run from the downloaded project folder
+installers\windows\install.cmd
+```
+
+The installer copies updated application files from the download folder into the
+install directory (`/opt/aardvark`, `~/Library/Application Support/Aardvark`,
+or `C:\Program Files\Aardvark`), recreates the virtual environment, and restarts
+the service.  User data (`config.toml`, session, logs, DC accounts) is preserved.
+
+### From inside the install directory *(maintenance / health check)*
+
+If you run the installer from **inside the install directory** itself, no files
+are updated (the source and destination are the same folder).
+
+**Windows** detects this automatically and switches to **maintenance mode**, which:
+- Checks Python venv integrity
+- Validates `config.toml` completeness (offers the wizard if broken)
+- Detects expired or corrupted Telegram sessions and offers to re-authenticate
+- Starts or restarts the service if it is not running
+- Reports connection status (Telegram, Delta Chat, email relay)
+- Displays Delta Chat invite links (waits up to 45 s)
+
+**Linux and macOS** do not have a dedicated maintenance mode.  If you run the
+installer from within the install directory on those platforms, it is effectively
+a no-op (rsync source = destination).  Use standard service control commands for
+health checks instead:
+
+```bash
+# Linux
+sudo systemctl status aardvark-relay
+
+# macOS
+launchctl print gui/$(id -u)/com.aardvark.relay
+```
+
+> **Rule of thumb:** always run the installer from the **source/download folder**
+> when you want to update.  Run it from the install directory only on Windows
+> as a maintenance/health-check shortcut.
 
 ---
 

@@ -35,6 +35,8 @@ import sys
 from pathlib import Path
 from typing import Optional, Set
 
+__version__ = "1.1.0"   # SemVer: MAJOR.MINOR.PATCH
+
 from relay.burst_limiter import BurstLimiter
 from relay.channel_mapper import ChannelMapper
 from relay.config import Config, load_config
@@ -836,6 +838,7 @@ def main() -> None:
     # so we attach only the RotatingFileHandler and skip the console handler.
     _setup_logging(args.log_level, log_file=args.log_file, console=not args.daemon)
 
+    logger.info("Aardvark v%s starting", __version__)
     logger.info("Loading configuration from %s", args.config)
     config = load_config(args.config)
 

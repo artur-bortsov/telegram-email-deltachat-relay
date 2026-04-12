@@ -60,32 +60,48 @@ watch = [
 # ------------------------------------------------------------
 # [delta_chat]  –  Delta Chat email account
 #
-# Delta Chat is email-based (IMAP + SMTP).  Aardvark uses a
-# dedicated email account as its relay sender.  You do NOT
-# need the Delta Chat app on the same machine.
+# Delta Chat uses email as its transport (IMAP + SMTP).  Aardvark needs
+# a dedicated sender email account to post messages into DC channels.
+# You do NOT need the Delta Chat app installed on the same machine.
 #
-# IMPORTANT: use a separate, dedicated sender email address
-# for relay purposes.  Do not use your personal inbox.
-# Any standard IMAP/SMTP provider works (Gmail, Fastmail, etc.)
-# Gmail requires an "App Password" if 2FA is enabled.
+# IMPORTANT: use a separate, dedicated email address here.
+# Do not use your personal inbox.
+# Suggested: Fastmail, Mailbox.org, or any standard IMAP/SMTP provider.
 #
 # enabled  –  set to false to skip Delta Chat entirely.
-#   Useful when you only want email relay (see [email_relay]).
+#   Useful when you only want plain email relay (see [email_relay]).
+#   Default: true
 #
-# addr / mail_pw  –  the sender email address and its password.
+# addr      –  the sender email address.  Appears as the sender of all
+#   forwarded messages.  Recipients join via invite link, not by email.
 #
-# database_path  –  path to the Delta Chat database file.
+# mail_pw   –  the account password or App Password.
+#   Some providers require an application-specific password:
+#     Gmail:      App Password required when 2FA is enabled
+#                 (Google Account → Security → App passwords)
+#     Yandex:     enable IMAP in mail settings; use App Password if 2FA on
+#     Outlook:    App Password if 2FA is enabled
+#     Fastmail, Mailbox.org: regular password works
 #
-# mail_server / send_server  –  override auto-detected IMAP /
-#   SMTP server hostnames.  Leave commented out for most providers.
+# database_path  –  filename for the Delta Chat database.
+#   Default: "deltachat.db"  (stored in the install directory)
+#
+# mail_server / send_server  –  override IMAP / SMTP server hostnames.
+#   Leave commented out – auto-detected for most providers.
+#   Common values:
+#     Gmail:          imap.gmail.com      / smtp.gmail.com
+#     Yandex:         imap.yandex.ru      / smtp.yandex.ru
+#     Fastmail:       imap.fastmail.com   / smtp.fastmail.com
+#     Mailbox.org:    imap.mailbox.org    / smtp.mailbox.org
+#     Outlook/Hotmail:outlook.office365.com (same for IMAP and SMTP)
 # ------------------------------------------------------------
 [delta_chat]
 enabled       = true
 addr          = ""              # e.g. "relay-sender@example.com"
 mail_pw       = ""              # email password or App Password
-database_path = "deltachat.db"
-# mail_server = "imap.example.com"
-# send_server = "smtp.example.com"
+database_path = "deltachat.db" # default; change only if needed
+# mail_server = "imap.example.com"   # e.g. imap.gmail.com
+# send_server = "smtp.example.com"   # e.g. smtp.gmail.com
 
 
 # ------------------------------------------------------------
@@ -193,23 +209,26 @@ use_for_email = true        # apply to email relay
 # ------------------------------------------------------------
 # [email_relay]  –  plain SMTP relay (optional, independent of DC)
 #
-# When enabled, every relayed message is also sent by SMTP to
-# the addresses in target_emails.  You can use this alongside
-# Delta Chat or instead of it.
+# When enabled, every relayed message is also sent by SMTP to the
+# addresses in target_emails.  Use alongside Delta Chat or instead of it.
 #
 # IMPORTANT: use a separate, dedicated sender email address here.
-# You may use the same address as delta_chat.addr if you like.
+# You may reuse the same address as delta_chat.addr.
+#
+# enabled   –  set to true to enable SMTP relay.  Default: false
 #
 # ssl_mode  –  how to connect to the SMTP server:
-#   "ssl"      – implicit TLS via SMTP_SSL, recommended, port 465
+#   "ssl"      – implicit TLS via SMTP_SSL, port 465  (recommended)
 #   "starttls" – STARTTLS upgrade, port 587
 #   "none"     – plain unencrypted (only for local/trusted servers)
+#   Default: "ssl"
 #
-# smtp_host  –  your SMTP server hostname.
-# smtp_port  –  25, 465, or 587 (match ssl_mode above).
-# smtp_user  –  the sender email address (login name).
-# smtp_password  –  password or App Password.
-# from_name  –  display name shown as the sender.
+# smtp_host  –  SMTP server hostname.
+#   Examples: smtp.gmail.com, smtp.yandex.ru, smtp.fastmail.com
+# smtp_port  –  465 (ssl), 587 (starttls), or 25 (none).  Default: 465
+# smtp_user  –  sender email address used as the SMTP login.
+# smtp_password  –  account password or App Password (same rules as DC).
+# from_name  –  display name shown as the sender.  Default: "Aardvark"
 # target_emails  –  list of recipient addresses.
 # ------------------------------------------------------------
 [email_relay]

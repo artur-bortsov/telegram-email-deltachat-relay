@@ -24,8 +24,32 @@
 
 ## 第 2 步 — 准备电子邮件账号 *（如有需要）*
 
-如需通过 Delta Chat 或直接邮件进行投递，请准备一个专用电子邮件地址，仅用于发送转发消息。  
-建议使用单独的地址，而非个人邮箱。
+如需通过 Delta Chat 或直接邮件进行投递，请准备一个**专用电子邮件地址**（不要使用个人邮笱）。
+
+在运行安装程序之前，请准备以下信息：
+
+| 项目 | 示例 |
+|---|---|
+| 发件人邮筱地址 | `relay@example.com` |
+| 密码或**应用程序密码** | （见下方） |
+| **IMAP** 服务器 | `imap.gmail.com` |
+| **SMTP** 服务器 | `smtp.gmail.com` |
+
+**应用程序密码**—启用两步验证（2FA）时，部分服务提供商要求使用应用程序密码：
+- **Gmail** — 在 Google 账户 → 安全 → 应用程序密码中创建
+- **Yandex** — 先在邮件设置中启用 IMAP，若已开启 2FA 则需创建应用程序密码
+- **Outlook / Hotmail** — 开启 2FA 时必须使用应用程序密码
+- **Fastmail、Mailbox.org** — 普通密码即可
+
+常用服务器地址：
+
+| 服务提供商 | IMAP | SMTP |
+|---|---|---|
+| Gmail | `imap.gmail.com` | `smtp.gmail.com` |
+| Yandex | `imap.yandex.ru` | `smtp.yandex.ru` |
+| Fastmail | `imap.fastmail.com` | `smtp.fastmail.com` |
+| Mailbox.org | `imap.mailbox.org` | `smtp.mailbox.org` |
+| Outlook/Hotmail | `outlook.office365.com` | `outlook.office365.com` |
 
 ---
 

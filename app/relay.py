@@ -568,6 +568,10 @@ async def _run_relay(initial_config: Config, config_path: str) -> None:
         )
         sys.exit(1)
 
+    # History replay runs outside the startup timeout: media downloads through
+    # slow proxies can take much longer than a normal connection timeout.
+    await tg.relay_history()
+
     # --- Helper: sync Telegram channel photo → DC channel ---
 
     async def _sync_channel_photo(channel_id: int, channel_name: str) -> None:

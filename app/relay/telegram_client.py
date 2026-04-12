@@ -160,7 +160,13 @@ class TelegramMonitor:
         self._message_callback = callback
 
     async def start(self) -> None:
-        """Connect to Telegram, resolve channels, and begin listening."""
+        """
+        Connect to Telegram, resolve channels, and register the event handler.
+
+        History replay is intentionally excluded from this method so that slow
+        media downloads do not consume the startup connection timeout applied in
+        relay.py.  Call relay_history() explicitly after start() returns.
+        """
         # Check proxy reachability before attempting connection.
         if self._proxy_cfg and self._proxy_cfg.enabled and self._proxy_cfg.host:
             if self._tcp_reachable(self._proxy_cfg.host, self._proxy_cfg.port):
@@ -190,6 +196,17 @@ class TelegramMonitor:
         self._register_event_handler()
         # Initialise activity timestamps so the watchdog has a baseline.
         self.reset_activity()
+        # History replay is deliberately omitted here; relay.py calls
+        # relay_history() after the connection timeout so media downloads
+        # do not count against the startup deadline.
+
+    async def relay_history(self) -> None:
+        """
+        Relay recent historical messages from all watched channels.
+
+        Separated from start() so that media downloads through slow proxies
+        do not trigger the startup connection timeout in relay.py.
+        """
         await self._relay_history()
 
     async def run_forever(self) -> None:

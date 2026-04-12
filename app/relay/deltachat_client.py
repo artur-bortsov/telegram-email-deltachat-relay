@@ -122,12 +122,22 @@ class DeltaChatClient:
         _needs_configure = True
         try:
             _stored_addr = self._account.get_config("addr") or ""
-            if _stored_addr == self._cfg.addr:
+            if _stored_addr == self._cfg.addr and self._account.is_configured():
+                # Address matches AND account is fully configured — safe to skip.
                 _needs_configure = False
                 logger.info(
                     "DC account has existing config for %s "
-                    "(is_configured=%s) - skipping configure(), calling start_io() directly.",
-                    self._cfg.addr, self._account.is_configured(),
+                    "(is_configured=True) - skipping configure(), calling start_io() directly.",
+                    self._cfg.addr,
+                )
+            elif _stored_addr == self._cfg.addr:
+                # Address is stored but is_configured=False: configure() previously
+                # failed or the process crashed before the flag was flushed to disk.
+                # Re-run configure() to restore the account to a working state.
+                logger.info(
+                    "DC account addr stored for %s but is_configured=False "
+                    "-- re-running configure() to fix broken account state.",
+                    self._cfg.addr,
                 )
         except Exception:
             pass  # get_config failed → fall through to fresh configure

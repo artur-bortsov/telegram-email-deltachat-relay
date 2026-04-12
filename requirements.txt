@@ -3,9 +3,7 @@ telethon==1.42.0
 deltachat-rpc-client==2.47.0
 deltachat-rpc-server==2.47.0
 tomli==2.3.0; python_version < "3.11"
-# PySocks is OPTIONAL and NOT included in the bundled vendor wheels.
-# The relay runs fine without it; proxy support is simply disabled.
-# To enable SOCKS5/HTTP proxy (proxy.enabled = true in config.toml),
-# install PySocks manually after the installer finishes:
-#   .venv/bin/pip install PySocks  (Linux/macOS)
-#   .venv\Scripts\pip install PySocks  (Windows)
+# PySocks enables SOCKS5/HTTP proxy support (proxy.type = "socks5" or "http").
+# Required when using Karing, Shadowsocks clients, or any local SOCKS5 proxy.
+# Not bundled as a vendor wheel; the installer falls back to online PyPI if needed.
+PySocks>=1.7.1

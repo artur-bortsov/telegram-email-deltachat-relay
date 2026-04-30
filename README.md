@@ -29,6 +29,7 @@ Aardvark logs in to Telegram with your personal account credentials (MTProto) an
 - Sends a "relay stopped" notice to Delta Chat channels when you remove them from the config
 - Reloads `config.toml` automatically while running — no restart needed for channel or burst changes
 - Automatically reconnects to Telegram if a channel goes silent for 6 hours, recovering from a known Telegram update-state drift without any service restart
+- Periodically prunes the Delta Chat blob cache (default: 24 h) so long-running installations do not accumulate gigabytes of stale media on disk
 
 ---
 
@@ -372,6 +373,9 @@ The config file is reloaded automatically while the service is running.  Channel
 
 **[delta_chat]** — sender email account for Delta Chat  
 - Set `enabled = false` to use email-only mode and skip Delta Chat entirely
+- `cache_lifetime_hours` (default `24`) controls how long files in the
+  per-account `dc.db-blobs/` directory are kept before automatic cleanup;
+  set to `0` to disable cleanup
 
 **[relay]** — history replay, media size limit, album behaviour, state file
 
@@ -569,6 +573,33 @@ the first message contains the caption and first media file; remaining files fol
 ## Burst limiter
 
 Channels that post many text messages in rapid succession are automatically combined into a single relay message.  The default threshold is 20 messages within 5 minutes.  Media messages bypass the limiter.
+
+---
+
+## Delta Chat blob cache cleanup
+
+Delta Chat stores every outgoing media attachment in the per-account
+`dc.db-blobs/` directory under `deltachat_accounts/<uuid>/`.  Because
+Aardvark is a one-way broadcast relay, the sender does not need to keep
+these files once SMTP has accepted the message: recipients have their
+own copies in their Delta Chat clients.  Without cleanup the directory
+grows without bound (multiple gigabytes after a couple of weeks of busy
+channels).
+
+A background task runs once at startup and then **every hour**, removing
+blob files whose modification time is older than
+`delta_chat.cache_lifetime_hours` (default: `24`).  The number of files
+deleted and the bytes freed are logged at INFO level:
+
+```
+DC blob cache cleanup enabled: removing files older than 24 h every 60 min.
+DC blob cache: removed 2353 file(s) (3409.9 MB) older than 24 h
+```
+
+Set `cache_lifetime_hours = 0` in `[delta_chat]` to disable cleanup
+entirely (useful when archiving every relayed file is desired).  Note
+that cleanup only removes files in `dc.db-blobs/`; the SQLite
+database, key material, and account configuration are never touched.
 
 ---
 

@@ -54,6 +54,12 @@ class DeltaChatConfig:
     # Override auto-detected IMAP / SMTP server hostnames when needed.
     mail_server: Optional[str] = None
     send_server: Optional[str] = None
+    # Maximum age (in hours) of files kept in the Delta Chat blob cache
+    # (`<account>/dc.db-blobs/`).  This relay is one-way: the sender does
+    # not need to retain blobs after delivery, so old media accumulates and
+    # wastes disk space.  A periodic task removes files older than this
+    # value.  Set to 0 (or negative) to disable cache cleanup entirely.
+    cache_lifetime_hours: int = 24
 
 
 @dataclass
@@ -205,6 +211,7 @@ def load_config(path: str | Path) -> Config:
             database_path=str(dc.get("database_path", "deltachat.db")),
             mail_server=dc.get("mail_server") or None,
             send_server=dc.get("send_server") or None,
+            cache_lifetime_hours=int(dc.get("cache_lifetime_hours", 24)),
         )
     # else: delta_chat stays None -> DC disabled, relay.py will log a warning
 

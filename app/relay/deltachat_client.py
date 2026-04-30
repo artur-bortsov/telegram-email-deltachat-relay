@@ -20,6 +20,7 @@ import concurrent.futures
 import hashlib
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -82,6 +83,10 @@ class DeltaChatClient:
         self._account: Optional[object] = None
         # Cache: channel name → Chat object
         self._chats: Dict[str, object] = {}
+        # Filesystem path to the deltachat-rpc-server accounts directory.
+        # Each account has its own UUID subfolder containing dc.db-blobs/.
+        # Set in start(); used by cleanup_blob_cache().
+        self._accounts_dir: Optional[str] = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -100,6 +105,8 @@ class DeltaChatClient:
             Path(self._cfg.database_path).parent.resolve() / f"{db_stem}_accounts"
         )
         os.makedirs(accounts_dir, exist_ok=True)
+        # Remember accounts_dir so cleanup_blob_cache() can locate dc.db-blobs/.
+        self._accounts_dir = accounts_dir
         logger.info("Starting deltachat-rpc-server with accounts dir: %s", accounts_dir)
 
         self._rpc = _Rpc(
@@ -440,3 +447,92 @@ class DeltaChatClient:
         except Exception:
             logger.exception("Error while searching for existing channel %r", name)
         return None
+
+    # ------------------------------------------------------------------
+    # Blob-cache maintenance
+    # ------------------------------------------------------------------
+
+    def cleanup_blob_cache(self) -> int:
+        """
+        Delete blob files older than ``cfg.cache_lifetime_hours``.
+
+        Delta Chat stores every outgoing media attachment in the per-account
+        ``dc.db-blobs/`` directory.  In a one-way broadcast relay the sender
+        does not need to keep blobs around once they have been delivered:
+        recipients have their own copy and SMTP has already accepted the
+        message.  Without periodic cleanup the directory grows without
+        bound (a few GB after a couple of weeks of busy channels).
+
+        Files are filtered by mtime; anything older than the configured
+        lifetime is unlinked.  Returns the number of files removed.
+        A non-positive lifetime (<= 0) disables cleanup and returns 0.
+
+        Safe to call from a background thread executor.
+        """
+        lifetime_hours = int(getattr(self._cfg, "cache_lifetime_hours", 0) or 0)
+        if lifetime_hours <= 0:
+            return 0
+
+        cutoff = time.time() - lifetime_hours * 3600
+        blob_dirs = self._discover_blob_dirs()
+        if not blob_dirs:
+            return 0
+
+        removed = 0
+        bytes_freed = 0
+        for blob_dir in blob_dirs:
+            try:
+                entries = os.scandir(blob_dir)
+            except FileNotFoundError:
+                continue
+            except OSError:
+                logger.exception("Failed to scan blob dir %s", blob_dir)
+                continue
+            with entries:
+                for entry in entries:
+                    try:
+                        if not entry.is_file(follow_symlinks=False):
+                            continue
+                        st = entry.stat(follow_symlinks=False)
+                        if st.st_mtime >= cutoff:
+                            continue
+                        os.unlink(entry.path)
+                        removed += 1
+                        bytes_freed += st.st_size
+                    except FileNotFoundError:
+                        # Concurrently removed by Delta Chat; ignore.
+                        continue
+                    except OSError:
+                        logger.exception("Failed to remove blob %s", entry.path)
+
+        if removed:
+            logger.info(
+                "DC blob cache: removed %d file(s) (%.1f MB) older than %d h",
+                removed, bytes_freed / (1024 * 1024), lifetime_hours,
+            )
+        else:
+            logger.debug(
+                "DC blob cache: no files older than %d h to remove",
+                lifetime_hours,
+            )
+        return removed
+
+    def _discover_blob_dirs(self) -> List[Path]:
+        """
+        Return all per-account ``dc.db-blobs/`` directories under the
+        accounts directory recorded in ``start()``.
+
+        Each Delta Chat account lives in a UUID-named subfolder; we look
+        for the ``dc.db-blobs`` child of any such folder.  Returns an
+        empty list when the accounts directory is missing or unreadable.
+        """
+        if not self._accounts_dir:
+            return []
+        base = Path(self._accounts_dir)
+        if not base.is_dir():
+            return []
+        try:
+            return [p for p in base.glob("*/dc.db-blobs") if p.is_dir()]
+        except OSError:
+            logger.exception("Failed to enumerate blob dirs under %s", base)
+            return []

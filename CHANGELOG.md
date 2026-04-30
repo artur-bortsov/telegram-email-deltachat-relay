@@ -5,6 +5,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [1.2.0] – 2026-04-30
+
+### Added
+- **Delta Chat blob cache lifetime** — the per-account `dc.db-blobs/` directory
+  used to grow without bound (multi-GB after a few weeks of busy channels)
+  because Delta Chat retains every outgoing media attachment.  A new
+  `delta_chat.cache_lifetime_hours` option (default: **24**) drives an hourly
+  background task that removes blob files older than the configured age.
+  Set the value to `0` to disable cleanup.  Since the relay is one-way,
+  the sender does not need to keep media after delivery: recipients have
+  their own copies, and SMTP has already accepted the message.
+- **`DeltaChatClient.cleanup_blob_cache()`** — reusable helper that walks the
+  configured accounts directory, scans each `dc.db-blobs/` subdirectory by
+  mtime, and unlinks expired files.  Reports both the file count and bytes
+  freed in the log.
+
+---
+
 ## [1.1.0] – 2026-04-12
 
 ### Added

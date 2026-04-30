@@ -35,7 +35,7 @@ import sys
 from pathlib import Path
 from typing import Optional, Set
 
-__version__ = "1.1.0"   # SemVer: MAJOR.MINOR.PATCH
+__version__ = "1.2.0"   # SemVer: MAJOR.MINOR.PATCH
 
 from relay.burst_limiter import BurstLimiter
 from relay.channel_mapper import ChannelMapper
@@ -734,6 +734,47 @@ async def _run_relay(initial_config: Config, config_path: str) -> None:
             logger.exception("Watchdog: Delta Chat health check failed")
             return False
 
+    # ---------------------------------------------------------------------------
+    # Periodic Delta Chat blob-cache cleanup
+    # ---------------------------------------------------------------------------
+    # The Delta Chat blob directory (`<account>/dc.db-blobs/`) accumulates every
+    # outgoing media attachment.  Since this relay is one-way, the sender does
+    # not need to keep them around once SMTP delivery has succeeded.  A
+    # background task removes blobs older than `delta_chat.cache_lifetime_hours`
+    # to bound disk usage on long-running installations.
+    _BLOB_CLEANUP_INTERVAL = 60 * 60   # run hourly
+
+    async def _blob_cache_cleanup() -> None:
+        """Run cleanup once at startup and then on a fixed interval."""
+        if dc_client is None:
+            return
+        # Pull the configured lifetime once; a non-positive value disables
+        # the task entirely (cleanup_blob_cache() also no-ops in that case,
+        # but skipping the loop avoids needless wake-ups).
+        lifetime = getattr(state.config.delta_chat, "cache_lifetime_hours", 0) or 0
+        if lifetime <= 0:
+            logger.info(
+                "DC blob cache cleanup disabled (cache_lifetime_hours=%d).",
+                lifetime,
+            )
+            return
+        logger.info(
+                "DC blob cache cleanup enabled: removing files older than %d h "
+                "every %d min.",
+                lifetime, _BLOB_CLEANUP_INTERVAL // 60,
+        )
+        _loop = asyncio.get_event_loop()
+        try:
+            await _loop.run_in_executor(None, dc_client.cleanup_blob_cache)
+        except Exception:
+            logger.exception("Initial DC blob cache cleanup failed")
+        while True:
+            await asyncio.sleep(_BLOB_CLEANUP_INTERVAL)
+            try:
+                await _loop.run_in_executor(None, dc_client.cleanup_blob_cache)
+            except Exception:
+                logger.exception("DC blob cache cleanup failed")
+
     async def _watchdog() -> None:
         """Comprehensive health check: network, Telegram connection, idle staleness, DC."""
         while True:
@@ -790,9 +831,10 @@ async def _run_relay(initial_config: Config, config_path: str) -> None:
     watch_task    = asyncio.ensure_future(_watch_config())
     invite_task   = asyncio.ensure_future(_retry_pending_invite_links())
     watchdog_task = asyncio.ensure_future(_watchdog())
+    blob_task     = asyncio.ensure_future(_blob_cache_cleanup())
 
     _done, _pending = await asyncio.wait(
-        [run_task, stop_task, watch_task, invite_task, watchdog_task],
+        [run_task, stop_task, watch_task, invite_task, watchdog_task, blob_task],
         return_when=asyncio.FIRST_COMPLETED,
     )
     for task in _pending:

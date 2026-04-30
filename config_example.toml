@@ -94,12 +94,19 @@ watch = [
 #     Fastmail:       imap.fastmail.com   / smtp.fastmail.com
 #     Mailbox.org:    imap.mailbox.org    / smtp.mailbox.org
 #     Outlook/Hotmail:outlook.office365.com (same for IMAP and SMTP)
+#
+# cache_lifetime_hours  –  maximum age (in hours) of files kept in the
+#   Delta Chat blob cache (`<account>/dc.db-blobs/`).  Files older than
+#   this are removed by an hourly background task.  This is a one-way
+#   broadcast relay, so the sender does not need to retain media after
+#   delivery.  Default: 24.  Set to 0 to disable cleanup entirely.
 # ------------------------------------------------------------
 [delta_chat]
-enabled       = true
-addr          = ""              # e.g. "relay-sender@example.com"
-mail_pw       = ""              # email password or App Password
-database_path = "deltachat.db" # default; change only if needed
+enabled              = true
+addr                 = ""              # e.g. "relay-sender@example.com"
+mail_pw              = ""              # email password or App Password
+database_path        = "deltachat.db" # default; change only if needed
+cache_lifetime_hours = 24              # blob cache retention (hours); 0 = disabled
 # mail_server = "imap.example.com"   # e.g. imap.gmail.com
 # send_server = "smtp.example.com"   # e.g. smtp.gmail.com
 

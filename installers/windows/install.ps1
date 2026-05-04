@@ -667,10 +667,14 @@ function Invoke-TelegramLogin {
     Write-Host ""
     Write-Host "************************************************************" -ForegroundColor Cyan
     Write-Host "  TELEGRAM $Mode" -ForegroundColor Cyan
-    Write-Host "  Telegram will send/has sent an SMS code to your phone." -ForegroundColor Cyan
+    Write-Host "  Telegram will send a login code via app, SMS, call," -ForegroundColor Cyan
+    Write-Host "  email, or another available delivery method." -ForegroundColor Cyan
     Write-Host "  >>> TYPE THE CODE IN THIS WINDOW, AT THE PROMPT BELOW <<<" -ForegroundColor Yellow
     Write-Host "  If 2FA / Cloud Password is enabled, a second prompt" -ForegroundColor Cyan
-    Write-Host "  appears right after - type your password there too." -ForegroundColor Cyan
+    Write-Host "  appears right after the login code - type your password there too." -ForegroundColor Cyan
+    Write-Host "  If no code arrives within about 1 minute, press Ctrl+C," -ForegroundColor Cyan
+    Write-Host "  do not keep requesting codes, and try again about 3 hours later." -ForegroundColor Cyan
+    Write-Host "  This is Telegram code delivery throttling, not a relay issue." -ForegroundColor Cyan
     Write-Host "************************************************************" -ForegroundColor Cyan
     Write-Host ""
     Push-Location $TargetDir
@@ -807,7 +811,7 @@ function Invoke-PostInstallCheck {
         Write-Warn "No Telegram session file found."
         Write-Host "  The service cannot relay messages until you authenticate."
         Write-Host "  You will be asked for:"
-        Write-Host "    1. SMS verification code Telegram sends to your phone"
+        Write-Host "    1. Telegram login code (app message, SMS, call, email, etc.)"
         Write-Host "    2. Your Telegram Cloud Password (only if 2FA is enabled)"
         Write-Host ""
         if (Ask-YN "Authenticate with Telegram now (recommended)?") {
@@ -817,6 +821,7 @@ function Invoke-PostInstallCheck {
                 Start-Sleep -Seconds 3
             } else {
                 Write-Warn "Authentication was not completed."
+                Write-Host "  If no login code arrived, press Ctrl+C and try again about 3 hours later."
                 Write-Host "  Run it manually, then restart the service:"
                 Write-Host "    `"$PyVenvExe`" `"$TargetDir\app\relay.py`" --login --config `"$TargetDir\config.toml`""
                 Write-Host "    sc stop  $ServiceId"
@@ -893,7 +898,7 @@ function Invoke-PostInstallCheck {
             Write-Host ""
             Write-Warn "Telegram did not connect even though a session file exists."
             Write-Host "  The session is likely expired or corrupted."
-            Write-Host "  Telegram has probably already sent a verification code to your phone."
+            Write-Host "  Telegram may ask for a fresh login code during re-authentication."
             Write-Host ""
             if (Ask-YN "Fix: stop service, remove old session, and re-authenticate now?") {
                 & $ServiceExe stop 2>$null | Out-Null
@@ -917,6 +922,7 @@ function Invoke-PostInstallCheck {
                     }
                 } else {
                     Write-Warn "Re-authentication was not completed."
+                    Write-Host "  If no login code arrived, press Ctrl+C and try again about 3 hours later."
                     Write-Host "  Run manually:  `"$PyVenvExe`" `"$TargetDir\app\relay.py`" --login --config `"$TargetDir\config.toml`""
                 }
             } else {
@@ -991,8 +997,9 @@ Write-Host "    channel and burst changes apply automatically in ~30 s."
 Write-Host ""
 Write-Host "  FIRST-TIME TELEGRAM LOGIN (required before the service can run):"
 Write-Host "    $TargetDir\.venv\Scripts\python app\relay.py --login --config $TargetDir\config.toml"
-Write-Host "    Telegram sends an SMS code to your phone; enter it when prompted."
+Write-Host "    Telegram sends a login code via app/SMS/call/email; enter it when prompted."
 Write-Host "    If 2FA (Cloud Password) is enabled, enter it immediately after."
+Write-Host "    If no code arrives within about 1 minute, press Ctrl+C and retry about 3 hours later."
 Write-Host "    The session is saved and reused automatically afterwards."
 Write-Host ""
 Write-Host "  PROXY NOTES:"

@@ -144,6 +144,22 @@ class EmailRelayConfig:
     # use_tls = true maps to ssl_mode = "starttls".
     use_tls: bool = False
 
+@dataclass
+class AdminNotificationsConfig:
+    """Administrator notifications for service health issues."""
+    enabled: bool = False
+    # Addresses that receive operational alerts, such as Telegram
+    # re-authentication requests or fatal relay failures.  These alerts reuse
+    # the SMTP settings from [email_relay] but do not enable message-by-message
+    # email forwarding.
+    administrator_emails: List[str] = field(default_factory=list)
+    # Minimum time between repeated alerts of the same kind.  This prevents a
+    # service manager restart loop or recurring watchdog failure from spamming
+    # the administrator.
+    cooldown_minutes: int = 180
+    # Small JSON file with last-sent timestamps for cooldown enforcement.
+    state_file: str = "admin_notifications_state.json"
+
 
 @dataclass
 class Config:
@@ -154,6 +170,7 @@ class Config:
     relay: RelayConfig = field(default_factory=RelayConfig)
     burst: BurstConfig = field(default_factory=BurstConfig)
     email_relay: EmailRelayConfig = field(default_factory=EmailRelayConfig)
+    admin_notifications: AdminNotificationsConfig = field(default_factory=AdminNotificationsConfig)
     # proxy: Telegram proxy (supports socks5, http, mtproto)
     proxy: ProxyConfig = field(default_factory=ProxyConfig)
     # dc_proxy: separate proxy for Delta Chat and email relay (socks5/http only).
@@ -303,6 +320,42 @@ def load_config(path: str | Path) -> Config:
         raise ValueError(
             "email_relay is enabled but target_emails is empty."
         )
+    # --- Administrator notifications ---
+    admin_raw = raw.get("admin_notifications", raw.get("administrator_notifications", {}))
+    admin_emails: List[str] = [
+        str(a) for a in admin_raw.get("administrator_emails", [])
+    ]
+    if admin_raw.get("administrator_email"):
+        administrator_email = str(admin_raw["administrator_email"])
+        if administrator_email not in admin_emails:
+            admin_emails.append(administrator_email)
+    admin_notifications = AdminNotificationsConfig(
+        enabled=bool(admin_raw.get("enabled", False)),
+        administrator_emails=admin_emails,
+        cooldown_minutes=int(admin_raw.get("cooldown_minutes", 180)),
+        state_file=str(admin_raw.get("state_file", "admin_notifications_state.json")),
+    )
+    if admin_notifications.enabled and not admin_notifications.administrator_emails:
+        raise ValueError(
+            "admin_notifications is enabled but administrator_emails is empty."
+        )
+    if admin_notifications.enabled:
+        missing_admin_smtp = []
+        if not email_relay.smtp_host:
+            missing_admin_smtp.append("email_relay.smtp_host")
+        if not email_relay.smtp_port:
+            missing_admin_smtp.append("email_relay.smtp_port")
+        if not email_relay.smtp_user:
+            missing_admin_smtp.append("email_relay.smtp_user")
+        if not email_relay.smtp_password:
+            missing_admin_smtp.append("email_relay.smtp_password")
+        if missing_admin_smtp:
+            raise ValueError(
+                "admin_notifications is enabled but SMTP settings are missing: "
+                + ", ".join(missing_admin_smtp)
+            )
+    if admin_notifications.cooldown_minutes < 0:
+        raise ValueError("admin_notifications.cooldown_minutes must be >= 0")
 
     # --- DC / email proxy ---
     # Explicit [dc_proxy] section takes precedence.  If absent, auto-inherit
@@ -349,6 +402,7 @@ def load_config(path: str | Path) -> Config:
         relay=relay,
         burst=burst,
         email_relay=email_relay,
+        admin_notifications=admin_notifications,
         proxy=proxy,
         dc_proxy=dc_proxy,
     )

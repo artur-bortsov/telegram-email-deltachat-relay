@@ -169,12 +169,20 @@ Authenticate with Telegram now (recommended)? [y/N]:
 
 Answer **y**.  What happens next:
 
-1. Telegram sends an **SMS code** to your phone number.
-2. You type the code in the terminal window where the installer is running.
+1. Telegram sends a **login code** using the delivery method it chooses:
+   Telegram app message, SMS, call, email, or another available method.
+2. The selected delivery method is printed in the terminal.  You type only
+   that code in the terminal window where the installer is running.
 3. If your account has **two-step verification (Cloud Password / 2FA)** enabled,
    a second prompt appears immediately after — type your Cloud Password there.
 4. The session is saved to a `.session` file in the install directory.
 5. The service starts automatically using the saved session.
+
+If no code arrives within about one minute, press **Ctrl+C**, do not keep
+requesting codes, and try the same login command again about **3 hours later**.
+This is Telegram code-delivery throttling/selection, not a relay issue.  When
+retrying, check the official Telegram service chat in an already logged-in app
+as well as SMS/call/email if Telegram offers them.
 
 After this you never need to log in again unless the session file is deleted.
 
@@ -331,13 +339,27 @@ directory:
 
 What happens:
 
-1. Telegram sends an **SMS verification code** to the phone number in `config.toml`.
-2. You type the code in the **terminal window** where you ran `--login`.
+1. Telegram sends a **login code** to the phone number in `config.toml`,
+   usually through an in-app Telegram message but sometimes by SMS, call, email,
+   or another available method.
+2. The selected delivery method is printed in the **terminal window** where you
+   ran `--login`.  Type only the Telegram login code there.
    The code is entered here — not inside the service, which has no terminal.
 3. If your account has a **Cloud Password (2FA)** enabled, a second prompt
-   appears immediately after the SMS code.  Type your password there.
+   appears immediately after the login code.  Type your password there.
 4. A `.session` file is saved in the current directory.
 5. You can now start the service.  It loads the session silently on every start.
+
+If the code does not arrive within about one minute:
+
+1. Press **Ctrl+C** to cancel `--login`.
+2. Do not keep requesting new codes.
+3. Try the same `--login` command again about **3 hours later**.
+4. Check the official Telegram service chat in an already logged-in Telegram app
+   as well as SMS/call/email if Telegram offers them.
+
+Delayed or missing code delivery at this stage is controlled by Telegram and is
+not a relay issue.
 
 After one successful `--login` you never need to run it again unless you
 delete the `.session` file or revoke the session from another Telegram client.
@@ -397,6 +419,19 @@ Common setups:
 - **Telegram only needs a proxy:** set `[proxy]` with `use_for_dc = false`
 
 **[email_relay]** — plain SMTP forwarding, independent of Delta Chat
+
+**[admin_notifications]** — operational alerts for service issues
+- Sends email to administrator addresses when the relay needs attention, such
+  as Telegram re-authentication required, Telegram startup failures, watchdog
+  reconnect failures, or Delta Chat unresponsiveness
+- Sends through the SMTP account configured in `[email_relay]`
+  (`smtp_host`, `smtp_port`, `smtp_user`, `smtp_password`, TLS settings,
+  and `from_name`); it does **not** send through `[delta_chat]`
+- `email_relay.enabled` can remain `false` if you do not want
+  message-by-message email forwarding.  If `[delta_chat]` and `[email_relay]`
+  use the same mailbox, admin alerts will naturally come from that same
+  mailbox, but the notifier still reads the SMTP settings from `[email_relay]`
+- Use `cooldown_minutes` to suppress repeated alerts for the same issue
 
 ### Email address recommendations
 
@@ -705,8 +740,48 @@ Check that `relay_state.json` exists and is writable by the service user.
 **Email relay not working**
 Verify `smtp_host`, `smtp_port`, `ssl_mode`, `smtp_user`, and `smtp_password`.  Check that your email provider allows SMTP access and that you are using an App Password if your account has 2FA enabled.
 
-**Telegram login asks for SMS code again**
+**Telegram login asks for a code again**
 The `.session` file is missing or unreadable.  Make sure the install directory is writable and the session file is preserved across updates.
+
+**Telegram login code does not arrive**
+If no code arrives within about one minute, press **Ctrl+C**, do not repeat the
+request many times, and try again about **3 hours later**.  Telegram chooses the
+delivery method, so check the official Telegram service chat in an already
+logged-in app first, then SMS/call/email if Telegram offers them.
+
+**Telegram session invalidated after VPN/IP/provider/route change**
+Telegram can invalidate a Telethon `.session` file when the same session is
+used from different IP routes, VPNs, providers, machines, or by two processes at
+the same time.  The relay parks instead of crash-looping and logs that
+re-authentication is required.
+
+Recovery:
+
+```bash
+# Linux
+sudo systemctl stop aardvark-relay
+cd /opt/aardvark
+sudo -u aardvark mv aardvark.session "aardvark.session.invalid.$(date +%Y%m%d-%H%M%S)"
+sudo -u aardvark .venv/bin/python app/relay.py --login --config config.toml
+sudo systemctl start aardvark-relay
+
+# macOS
+cd "$HOME/Library/Application Support/Aardvark"
+launchctl bootout gui/$(id -u) "$HOME/Library/LaunchAgents/com.aardvark.relay.plist"
+mv aardvark.session "aardvark.session.invalid.$(date +%Y%m%d-%H%M%S)"
+.venv/bin/python app/relay.py --login --config config.toml
+launchctl bootstrap gui/$(id -u) "$HOME/Library/LaunchAgents/com.aardvark.relay.plist"
+
+# Windows
+sc stop AardvarkRelay
+cd /d "C:\Program Files\Aardvark"
+ren aardvark.session aardvark.session.invalid
+.venv\Scripts\python app\relay.py --login --config config.toml
+sc start AardvarkRelay
+```
+
+If the login code does not arrive during recovery, follow the one-minute /
+three-hour retry guidance above.
 
 **Proxy not working**
 For SOCKS5/HTTP, verify PySocks is installed (`pip show PySocks`).  For MTProto, verify the proxy secret is correct.

@@ -20,13 +20,20 @@
 #
 # phone  –  your Telegram phone number in international format.
 #   Example: +12025551234
-#   The first time you run the service, Telegram will send you
-#   an SMS code.  Enter it in the terminal.  After that the
-#   session is saved and reused automatically.
+#   The first time you run the service, Telegram will send a login
+#   code via the delivery method it chooses: Telegram app message,
+#   SMS, call, email, or another available method.  Enter only that
+#   code in the terminal.  After that the session is saved and reused
+#   automatically.
+#
+#   If no code arrives within about one minute, press Ctrl+C, do not
+#   keep requesting codes, and try the same login command again about
+#   3 hours later.  This is Telegram code-delivery throttling/selection,
+#   not a relay issue.
 #
 # Two-step verification (2FA): if your Telegram account has a
 #   Cloud Password enabled, the wizard will prompt for it after
-#   the SMS code.  You cannot disable this prompt; it is built
+#   the login code.  You cannot disable this prompt; it is built
 #   into the Telegram login flow.
 #
 # session_name  –  name for the saved session file (no extension).
@@ -218,6 +225,11 @@ use_for_email = true        # apply to email relay
 #
 # When enabled, every relayed message is also sent by SMTP to the
 # addresses in target_emails.  Use alongside Delta Chat or instead of it.
+# The SMTP server settings are also reused by [admin_notifications]
+# when operational alerts are enabled; admin notifications are sent from
+# this SMTP account, not directly from [delta_chat].  email_relay.enabled
+# may remain false when you only want administrator alerts and not
+# message-by-message email forwarding.
 #
 # IMPORTANT: use a separate, dedicated sender email address here.
 # You may reuse the same address as delta_chat.addr.
@@ -247,3 +259,29 @@ smtp_password = "your_smtp_password"
 ssl_mode      = "ssl"                         # "ssl", "starttls", or "none"
 target_emails = ["recipient@example.com"]
 from_name     = "Aardvark"
+
+
+# ------------------------------------------------------------
+# [admin_notifications]  –  service health alerts
+#
+# Sends operational issue emails to administrators, such as Telegram
+# re-authentication required, startup failures, watchdog reconnect failures,
+# or Delta Chat unresponsiveness.  These are separate from message-by-message
+# [email_relay] forwarding and only require the SMTP settings above.
+#
+# Sender account: admin notifications use [email_relay] SMTP settings
+# (smtp_host, smtp_port, smtp_user, smtp_password, ssl_mode/from_name).
+# They do not use [delta_chat] addr/mail_pw, unless you intentionally
+# configured [email_relay] with the same mailbox as [delta_chat].
+#
+# enabled  –  set true to send operational alerts.
+# administrator_emails  –  recipients for alerts.
+# cooldown_minutes  –  suppress repeated alerts with the same issue key for
+#   this many minutes.  Default: 180.
+# state_file  –  JSON file used to remember cooldown timestamps.
+# ------------------------------------------------------------
+[admin_notifications]
+enabled              = false
+administrator_emails = ["admin@example.com"]
+cooldown_minutes     = 180
+state_file           = "admin_notifications_state.json"

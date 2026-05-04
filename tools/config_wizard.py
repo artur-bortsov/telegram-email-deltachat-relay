@@ -363,6 +363,7 @@ def _write_config(path: Path, d: Dict[str, Any], install_dir: Optional[str] = No
     """
     dc = d["delta_chat"]
     em = d["email_relay"]
+    admin = d["admin_notifications"]
     pr = d["proxy"]
     rel = d["relay"]
     burst = d["burst"]
@@ -378,10 +379,14 @@ def _write_config(path: Path, d: Dict[str, Any], install_dir: Optional[str] = No
         if dc.get("database_path"):
             dc = dict(dc)
             dc["database_path"] = _abs(dc["database_path"])
+        if admin.get("state_file"):
+            admin = dict(admin)
+            admin["state_file"] = _abs(admin["state_file"])
         tg = dict(d["telegram"])
         tg["session_name"] = _abs(tg["session_name"])
         d = dict(d)
         d["telegram"] = tg
+        d["admin_notifications"] = admin
 
     dc_enabled_str = "true" if dc["enabled"] else "false"
     em_enabled_str = "true" if em["enabled"] else "false"
@@ -410,6 +415,7 @@ enabled       = {dc_enabled_str}
 addr          = "{dc['addr']}"
 mail_pw       = "{dc['mail_pw']}"
 database_path = "{dc['database_path']}"
+cache_lifetime_hours = {dc.get('cache_lifetime_hours', 24)}
 """
     if dc.get("mail_server"):
         content += f'mail_server = "{dc["mail_server"]}"\n'
@@ -471,6 +477,15 @@ smtp_password = "{em['smtp_password']}"
 ssl_mode      = "{em['ssl_mode']}"
 target_emails = {_toml_arr(em['target_emails'])}
 from_name     = "{em['from_name']}"
+# Admin notifications use the SMTP account configured in [email_relay]
+# above.  They do not send through [delta_chat], unless [email_relay]
+# intentionally uses the same mailbox as [delta_chat].
+
+[admin_notifications]
+enabled              = {"true" if admin["enabled"] else "false"}
+administrator_emails = {_toml_arr(admin["administrator_emails"])}
+cooldown_minutes     = {admin["cooldown_minutes"]}
+state_file           = "{admin['state_file']}"
 """
     path.write_text(content, encoding="utf-8")
 
@@ -559,10 +574,14 @@ def _print_post_setup(output: Path, install_dir: Optional[str], relay_mode: str)
         "First-time Telegram login\n"
         "-------------------------\n"
         "BEFORE starting the service, run this command once to authenticate\n"
-        "interactively with Telegram (enter SMS code + Cloud Password if 2FA):\n"
+        "interactively with Telegram (enter the login code + Cloud Password if 2FA):\n"
         "\n"
         "  Linux/macOS: .venv/bin/python app/relay.py --login --config config.toml\n"
         "  Windows    : .venv\\Scripts\\python app\\relay.py --login --config config.toml\n"
+        "\n"
+        "Telegram chooses the code delivery method: app message, SMS, call,\n"
+        "email, or another available method. If no code arrives within about\n"
+        "one minute, press Ctrl+C and try again about 3 hours later.\n"
         "\n"
         "The session is saved after one successful login and reused automatically."
     )
@@ -626,8 +645,11 @@ def _wizard_telegram(tg: Dict[str, Any]) -> Dict[str, Any]:
         "----------------\n"
         "After this wizard finishes, run once:\n"
         "  .venv/bin/python app/relay.py --config config.toml --login\n"
-        "Telegram sends an SMS code to your phone; enter it when prompted.\n"
+        "Telegram sends a login code via app, SMS, call, email, or another\n"
+        "available method; enter it when prompted.\n"
         "If 2FA is enabled, also enter your Cloud Password.\n"
+        "If no code arrives within about one minute, press Ctrl+C and try\n"
+        "again about 3 hours later. This is not a relay issue.\n"
         "The session is then saved and reused automatically."
     )
     return {
@@ -711,6 +733,11 @@ def _wizard_delta_chat(dc: Dict[str, Any]) -> Dict[str, Any]:
         "Delta Chat database filename",
         str(dc.get("database_path", "deltachat.db")), _v_nonempty,
     )
+    cache_lifetime_hours = int(_ask(
+        "Delta Chat blob cache lifetime in hours",
+        str(dc.get("cache_lifetime_hours", 24)),
+        _v_positive_int,
+    ))
     print()
     _info(
         "IMAP / SMTP overrides  (press Enter to skip and use auto-detect)"
@@ -728,6 +755,7 @@ def _wizard_delta_chat(dc: Dict[str, Any]) -> Dict[str, Any]:
         "addr": addr,
         "mail_pw": mail_pw,
         "database_path": database_path,
+        "cache_lifetime_hours": cache_lifetime_hours,
         "mail_server": mail_server or "",
         "send_server": send_server or "",
     }
@@ -777,6 +805,94 @@ def _wizard_email_relay(em: Dict[str, Any], dc_addr: str = "") -> Dict[str, Any]
         "target_emails": target_emails,
         "from_name": from_name,
         "use_tls": False,
+    }
+
+def _wizard_admin_notifications(
+    admin: Dict[str, Any],
+    em: Dict[str, Any],
+    dc_addr: str = "",
+) -> Dict[str, Any]:
+    _section("Optional  –  Administrator issue notifications")
+    _info(
+        "Aardvark can send operational alerts when the service needs\n"
+        "administrator action, for example Telegram re-authentication,\n"
+        "startup failures, watchdog reconnect failures, or Delta Chat\n"
+        "unresponsiveness.\n"
+        "\n"
+        "These alerts are separate from message-by-message email forwarding.\n"
+        "They reuse SMTP settings from [email_relay], but email_relay.enabled\n"
+        "can stay false if you only want service issue alerts."
+    )
+    print()
+
+    if not _ask_yn(
+        "Enable administrator issue notifications?",
+        default=bool(admin.get("enabled", False)),
+    ):
+        return {
+            "enabled": False,
+            "administrator_emails": [],
+            "cooldown_minutes": 180,
+            "state_file": "admin_notifications_state.json",
+        }
+
+    smtp_configured = bool(
+        em.get("smtp_host")
+        and em.get("smtp_port")
+        and em.get("smtp_user")
+        and em.get("smtp_password")
+    )
+    if not smtp_configured:
+        _info(
+            "SMTP settings are required to send administrator alerts.\n"
+            "They will be stored in [email_relay], but normal email forwarding\n"
+            "will remain disabled unless you enabled it earlier."
+        )
+        print()
+        smtp_host = _ask("SMTP server hostname", str(em.get("smtp_host", "")) or None, _v_nonempty)
+        ssl_mode = _ask("SSL mode", str(em.get("ssl_mode", "ssl")), _v_ssl_mode)
+        default_port = "465" if ssl_mode == "ssl" else ("587" if ssl_mode == "starttls" else "25")
+        smtp_port = int(_ask("SMTP port", str(em.get("smtp_port", default_port)), _v_port))
+        smtp_user = _ask(
+            "Sender email address (SMTP login)",
+            str(em.get("smtp_user", dc_addr)) or None,
+            _v_email,
+        )
+        smtp_password = _ask("SMTP password or App Password", None, _v_nonempty, secret=True)
+        from_name = _ask("Sender display name", str(em.get("from_name", "Aardvark")), _v_nonempty)
+        em.update({
+            "smtp_host": smtp_host,
+            "smtp_port": smtp_port,
+            "smtp_user": smtp_user,
+            "smtp_password": smtp_password,
+            "ssl_mode": ssl_mode,
+            "from_name": from_name,
+            "use_tls": False,
+        })
+
+    existing_admin_emails = [str(v) for v in admin.get("administrator_emails", [])]
+    if admin.get("administrator_email"):
+        existing_admin_emails.append(str(admin["administrator_email"]))
+    administrator_emails = _ask_emails(
+        "Administrator email addresses (comma-separated)",
+        existing_admin_emails,
+        required=True,
+    )
+    cooldown_minutes = int(_ask(
+        "Alert cooldown in minutes",
+        str(admin.get("cooldown_minutes", 180)),
+        _v_positive_int,
+    ))
+    state_file = _ask(
+        "Admin notification state filename",
+        str(admin.get("state_file", "admin_notifications_state.json")),
+        _v_nonempty,
+    )
+    return {
+        "enabled": True,
+        "administrator_emails": administrator_emails,
+        "cooldown_minutes": cooldown_minutes,
+        "state_file": state_file,
     }
 
 
@@ -1057,7 +1173,8 @@ def main() -> None:
     else:
         dc_data = {
             "enabled": False, "addr": "", "mail_pw": "",
-            "database_path": "deltachat.db", "mail_server": "", "send_server": "",
+            "database_path": "deltachat.db", "cache_lifetime_hours": 24,
+            "mail_server": "", "send_server": "",
         }
 
     em_existing = existing.get("email_relay", {})
@@ -1069,6 +1186,11 @@ def main() -> None:
             "smtp_user": "", "smtp_password": "", "ssl_mode": "ssl",
             "target_emails": [], "from_name": "Aardvark", "use_tls": False,
         }
+    admin_data = _wizard_admin_notifications(
+        existing.get("admin_notifications", existing.get("administrator_notifications", {})),
+        em_data,
+        dc_addr=dc_data.get("addr", ""),
+    )
 
     # Use configured mail/smtp hosts for connectivity check in the proxy step
     imap_host = dc_data.get("mail_server", "") or ""
@@ -1095,6 +1217,7 @@ def main() -> None:
         "proxy": pr_data,
         "dc_proxy": dc_pr_data,
         "email_relay": em_data,
+        "admin_notifications": admin_data,
     }
 
     _write_config(output, data, install_dir=args.install_dir)

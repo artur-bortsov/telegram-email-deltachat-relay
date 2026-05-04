@@ -121,6 +121,32 @@ def validate(path: Path, require_complete: bool) -> int:
         return _fail(
             f"email_relay.ssl_mode must be 'ssl', 'starttls', or 'none', got: {ssl_mode!r}"
         )
+    # --- Administrator notifications ---
+    admin = data.get("admin_notifications", data.get("administrator_notifications", {}))
+    if admin.get("enabled"):
+        admin_emails = admin.get("administrator_emails", [])
+        if admin.get("administrator_email"):
+            admin_emails = list(admin_emails) + [admin.get("administrator_email")]
+        if not isinstance(admin_emails, list) or not admin_emails:
+            return _fail(
+                "admin_notifications.enabled = true requires administrator_emails"
+            )
+        if int(admin.get("cooldown_minutes", 180)) < 0:
+            return _fail("admin_notifications.cooldown_minutes must be >= 0")
+        missing = [
+            name for name in (
+                "smtp_host",
+                "smtp_port",
+                "smtp_user",
+                "smtp_password",
+            )
+            if not email.get(name)
+        ]
+        if missing:
+            return _fail(
+                "admin_notifications.enabled = true requires SMTP settings in "
+                "[email_relay]: " + ", ".join(missing)
+            )
 
     return 0
 

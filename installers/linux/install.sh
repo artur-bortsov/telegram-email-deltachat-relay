@@ -419,10 +419,14 @@ _run_login() {
   echo
   echo "================================================================"
   echo "  TELEGRAM AUTHENTICATION"
-  echo "  Telegram will send/has sent an SMS code to your phone."
+  echo "  Telegram will send a login code via app, SMS, call, email,"
+  echo "  or another available delivery method."
   echo "  >>> TYPE THE CODE IN THIS WINDOW, AT THE PROMPT BELOW <<<"
   echo "  If 2FA / Cloud Password is enabled, a second prompt appears"
-  echo "  right after the SMS code - type your password there too."
+  echo "  right after the login code - type your password there too."
+  echo "  If no code arrives within about 1 minute, press Ctrl+C,"
+  echo "  do not keep requesting codes, and try again about 3 hours later."
+  echo "  This is Telegram code delivery throttling, not a relay issue."
   echo "================================================================"
   echo
   # cd to install dir so the .session file is always created there
@@ -445,7 +449,7 @@ _post_install_check() {
     warn "No Telegram session file found."
     echo "  The service cannot relay messages until you authenticate."
     echo "  You will be asked for:"
-    echo "    1. SMS verification code Telegram sends to your phone"
+    echo "    1. Telegram login code (app message, SMS, call, email, etc.)"
     echo "    2. Your Telegram Cloud Password (only if 2FA is enabled)"
     echo
     if ask "Authenticate with Telegram now?"; then
@@ -455,6 +459,7 @@ _post_install_check() {
         sleep 3
       else
         warn "Authentication was not completed."
+        echo "  If no login code arrived, press Ctrl+C and try again about 3 hours later."
         echo "  Run it manually when ready, then restart the service:"
         echo "    sudo -u $SERVICE_USER $TARGET_DIR/.venv/bin/python \\"
         echo "      $TARGET_DIR/app/relay.py --login --config $TARGET_DIR/config.toml"
@@ -535,7 +540,7 @@ _post_install_check() {
       echo
       warn "Telegram did not connect even though a session file exists."
       echo "  The session is likely expired or corrupted."
-      echo "  Telegram has probably already sent a verification code to your phone."
+      echo "  Telegram may ask for a fresh login code during re-authentication."
       echo
       if ask "Fix: stop service, remove old session, and re-authenticate now?"; then
         systemctl stop "$SERVICE_NAME" 2>/dev/null || true
@@ -626,8 +631,9 @@ echo
 echo "  FIRST-TIME TELEGRAM LOGIN (required before the service can run):"
 echo "    sudo -u $SERVICE_USER $TARGET_DIR/.venv/bin/python \\"
 echo "      $TARGET_DIR/app/relay.py --login --config $TARGET_DIR/config.toml"
-echo "    Telegram sends an SMS code to your phone; enter it when prompted."
+echo "    Telegram sends a login code via app/SMS/call/email; enter it when prompted."
 echo "    If 2FA (Cloud Password) is enabled, enter it immediately after."
+echo "    If no code arrives within about 1 minute, press Ctrl+C and retry about 3 hours later."
 echo "    The session is saved and reused automatically afterwards."
 echo
 echo "  PROXY NOTES:"

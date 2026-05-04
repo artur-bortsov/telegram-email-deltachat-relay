@@ -5,6 +5,34 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [1.3.0] – 2026-05-05
+
+### Added
+- **Administrator issue notifications** — new `[admin_notifications]` config
+  section sends operational alerts to administrator email addresses when the
+  relay needs attention, including Telegram re-authentication, startup
+  failures, watchdog reconnect failures, and Delta Chat unresponsiveness.
+  Alerts reuse SMTP settings from `[email_relay]`, support cooldowns, and can
+  be verified with `app/relay.py --test-admin-notification`.
+- **Telegram login delivery details** — `--login` now prints the Telegram code
+  delivery method when available and gives explicit guidance to press Ctrl+C
+  and retry about 3 hours later if no code arrives within about one minute.
+
+### Changed
+- **Telegram session invalidation handling** — unrecoverable Telethon session
+  authentication errors now park the service with actionable recovery guidance
+  instead of crash-looping.
+- **Documentation and installers** — refreshed README, config reference,
+  installers, quick-start docs, validator, and setup wizard for administrator
+  notifications and delayed Telegram login-code retry guidance.
+
+### Fixed
+- **SMTP over implicit TLS with proxies** — plain email/admin notification
+  sending now returns success/failure explicitly and handles proxy sockets for
+  implicit TLS without using unsupported `SMTP_SSL(sock=...)`.
+
+---
+
 ## [1.2.0] – 2026-04-30
 
 ### Added

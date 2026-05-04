@@ -26,24 +26,27 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import getpass
 import logging
 import logging.handlers
 import os
 import shutil
 import signal
 import sys
+import traceback
 from pathlib import Path
 from typing import Optional, Set
 
-__version__ = "1.2.0"   # SemVer: MAJOR.MINOR.PATCH
+__version__ = "1.3.0"   # SemVer: MAJOR.MINOR.PATCH
 
+from relay.admin_notifier import AdminNotifier
 from relay.burst_limiter import BurstLimiter
 from relay.channel_mapper import ChannelMapper
 from relay.config import Config, load_config
 from relay.deltachat_client import DeltaChatClient
 from relay.email_relay import EmailRelay
 from relay.state_tracker import StateTracker
-from relay.telegram_client import TelegramMonitor
+from relay.telegram_client import TelegramMonitor, TelegramSessionInvalidError
 
 logger = logging.getLogger(__name__)
 
@@ -96,10 +99,16 @@ def _parse_args() -> argparse.Namespace:
         help=(
             "Perform interactive Telegram authentication, then exit.  "
             "Run this once before starting the service so the session "
-            "file is created.  You will be prompted for the SMS code "
-            "Telegram sends to your phone, and your Cloud Password if "
+            "file is created.  You will be prompted for the login code "
+            "Telegram sends via app, SMS, call, or another available "
+            "delivery method, and your Cloud Password if "
             "two-step verification (2FA) is enabled."
         ),
+    )
+    p.add_argument(
+        "--test-admin-notification",
+        action="store_true",
+        help="Send a test email to admin_notifications.administrator_emails, then exit",
     )
     p.add_argument(
         "--log-file",
@@ -294,16 +303,236 @@ _FAREWELL = (
 # ---------------------------------------------------------------------------
 # First-time Telegram login
 # ---------------------------------------------------------------------------
+def _telegram_code_type_description(code_type: object | None) -> str:
+    """Return a user-facing description for Telegram's code delivery type."""
+    type_name = type(code_type).__name__ if code_type is not None else "unknown"
+    descriptions = {
+        "SentCodeTypeApp": (
+            "Telegram app message "
+            "(check the official Telegram chat in an already logged-in app)"
+        ),
+        "SentCodeTypeSms": "SMS",
+        "SentCodeTypeCall": "phone call",
+        "SentCodeTypeFlashCall": "flash call",
+        "SentCodeTypeMissedCall": "missed call",
+        "SentCodeTypeEmailCode": "email",
+        "SentCodeTypeSetUpEmailRequired": "email setup required",
+        "SentCodeTypeFragmentSms": "Fragment SMS",
+        "SentCodeTypeFirebaseSms": "SMS via Firebase/Android",
+        "SentCodeTypeSmsWord": "SMS containing a word",
+        "SentCodeTypeSmsPhrase": "SMS containing a phrase",
+        "CodeTypeSms": "SMS",
+        "CodeTypeCall": "phone call",
+        "CodeTypeFlashCall": "flash call",
+        "CodeTypeMissedCall": "missed call",
+        "CodeTypeFragmentSms": "Fragment SMS",
+    }
+    description = descriptions.get(type_name, type_name)
+
+    details = []
+    for attr in ("length", "email_pattern", "prefix", "beginning", "pattern", "url"):
+        value = getattr(code_type, attr, None)
+        if value:
+            details.append(f"{attr.replace('_', ' ')}: {value}")
+    if details:
+        description = f"{description} ({', '.join(details)})"
+
+    return description
+
+
+def _print_telegram_code_delivery(sent_code: object) -> None:
+    """Print the delivery method Telegram reported for the requested code."""
+    delivery_type = getattr(sent_code, "type", None)
+    next_type = getattr(sent_code, "next_type", None)
+    timeout = getattr(sent_code, "timeout", None)
+
+    print()
+    print(f"  Code delivery : {_telegram_code_type_description(delivery_type)}")
+    if next_type is not None and timeout is not None:
+        print(
+            "  Next option   : "
+            f"{_telegram_code_type_description(next_type)} in {timeout} seconds"
+        )
+    elif next_type is not None:
+        print(f"  Next option   : {_telegram_code_type_description(next_type)}")
+    elif timeout is not None:
+        print(f"  Retry timeout : {timeout} seconds")
+
+    print()
+    print("  Enter only the Telegram login code when it arrives.")
+    print("  Do not enter invite links, recovery codes, or other tokens.")
+    print()
+
+def _admin_install_dir(config_path: str) -> Path:
+    """Return the install directory implied by the config path."""
+    return Path(config_path).expanduser().resolve().parent
+
+
+def _admin_service_commands(config_path: str, session_name: str) -> str:
+    """Return platform-specific commands for administrator emails."""
+    install_dir = _admin_install_dir(config_path)
+    session_file = Path(session_name)
+    if session_file.suffix != ".session":
+        session_file = Path(f"{session_file}.session")
+
+    if sys.platform == "darwin":
+        plist = "$HOME/Library/LaunchAgents/com.aardvark.relay.plist"
+        return (
+            "macOS commands:\n"
+            f"  1. cd \"{install_dir}\"\n"
+            f"  2. launchctl bootout gui/$(id -u) \"{plist}\"\n"
+            f"  3. mv \"{session_file}\" \"{session_file}.invalid.$(date +%Y%m%d-%H%M%S)\"\n"
+            "  4. .venv/bin/python app/relay.py --login --config config.toml\n"
+            f"  5. launchctl bootstrap gui/$(id -u) \"{plist}\"\n"
+            "  6. launchctl print gui/$(id -u)/com.aardvark.relay\n"
+            "  7. tail -f logs/relay.log"
+        )
+    if sys.platform.startswith("linux"):
+        return (
+            "Linux commands:\n"
+            "  1. sudo systemctl stop aardvark-relay\n"
+            f"  2. cd \"{install_dir}\"\n"
+            f"  3. sudo -u aardvark mv \"{session_file}\" \"{session_file}.invalid.$(date +%Y%m%d-%H%M%S)\"\n"
+            "  4. sudo -u aardvark .venv/bin/python app/relay.py --login --config config.toml\n"
+            "  5. sudo systemctl start aardvark-relay\n"
+            "  6. sudo systemctl status aardvark-relay\n"
+            "  7. journalctl -u aardvark-relay -f"
+        )
+    if sys.platform == "win32":
+        return (
+            "Windows commands (run in an Administrator terminal):\n"
+            r"  1. sc stop AardvarkRelay" "\n"
+            rf"  2. cd /d \"{install_dir}\"" "\n"
+            rf"  3. ren \"{session_file}\" \"{session_file}.invalid.%DATE:/=-%-%TIME::=-%\"" "\n"
+            r"  4. .venv\Scripts\python app\relay.py --login --config config.toml" "\n"
+            r"  5. sc start AardvarkRelay" "\n"
+            r"  6. sc query AardvarkRelay" "\n"
+            r"  7. powershell -command Get-Content logs\relay.log -Wait -Tail 50"
+        )
+    return (
+        "Manual commands:\n"
+        f"  1. cd \"{install_dir}\"\n"
+        "  2. Stop the running service/process.\n"
+        f"  3. Move/delete \"{session_file}\" if Telegram re-authentication is required.\n"
+        "  4. .venv/bin/python app/relay.py --login --config config.toml\n"
+        "  5. Start the service/process again.\n"
+        "  6. Check logs/relay.log."
+    )
+
+
+def _telegram_code_retry_note() -> str:
+    """Return the delayed retry guidance for Telegram code delivery."""
+    return (
+        "If the Telegram login code does not arrive within about one minute:\n"
+        "  - Press Ctrl+C to cancel the login prompt.\n"
+        "  - Do not keep requesting codes repeatedly.\n"
+        "  - Try the same login command again about 3 hours later.\n"
+        "  - This is Telegram code-delivery throttling/selection, not a relay issue.\n"
+        "  - When retrying, check the official Telegram service chat in an already\n"
+        "    logged-in app as well as SMS/call/email if Telegram offers them."
+    )
+
+
+def _admin_issue_body(
+    title: str,
+    summary: str,
+    config_path: str,
+    *,
+    actions: list[str],
+    details: str = "",
+    include_reauth: bool = False,
+    session_name: str = "aardvark",
+) -> str:
+    """Build a consistent administrator notification body."""
+    commands = _admin_service_commands(config_path, session_name)
+    body = [
+        title,
+        "",
+        "Summary:",
+        summary,
+        "",
+        "Recommended actions:",
+    ]
+    body.extend(f"  {i}. {action}" for i, action in enumerate(actions, start=1))
+    if include_reauth:
+        body.extend(["", _telegram_code_retry_note()])
+    body.extend(
+        [
+            "",
+            "Useful commands:",
+            commands,
+            "",
+            "If this is not one of the known issues, collect diagnostics before changing config:",
+            "  - Check the service status.",
+            "  - Review the latest relay log entries.",
+            "  - Verify network/proxy reachability.",
+            "  - Verify SMTP/IMAP credentials if Delta Chat or email delivery is affected.",
+        ]
+    )
+    if details:
+        body.extend(["", "Technical details:", details])
+    return "\n".join(body)
+
+
+def _admin_telegram_reauth_body(
+    exc: TelegramSessionInvalidError,
+    config_path: str,
+    session_name: str,
+) -> str:
+    """Build the Telegram re-authentication alert body."""
+    commands = _admin_service_commands(config_path, session_name)
+    return (
+        "Aardvark cannot relay Telegram messages because the saved Telegram "
+        "session is not usable.\n\n"
+        f"Error:\n{exc}\n\n"
+        "This often happens when the same Telethon .session file is reused from "
+        "another machine, from a different IP route/VPN/provider, or by two "
+        "processes at the same time. Telegram may invalidate the authorization "
+        "key. The relay cannot repair this automatically; an administrator must "
+        "create a new session with an interactive login.\n\n"
+        "Recovery steps:\n"
+        f"{commands}\n\n"
+        f"{_telegram_code_retry_note()}"
+    )
+
+
+async def _send_admin_notification_test(config: Config, config_path: str) -> bool:
+    """Send a test administrator notification and print the result."""
+    notifier = AdminNotifier(
+        config.admin_notifications,
+        config.email_relay,
+        proxy_cfg=config.dc_proxy,
+    )
+    body = _admin_issue_body(
+        "Aardvark administrator notification test",
+        "This is a test message. No service action is required.",
+        config_path,
+        actions=[
+            "Confirm this email arrived at the configured administrator mailbox.",
+            "If it did not arrive, check [admin_notifications] recipients and [email_relay] SMTP settings.",
+        ],
+    )
+    sent = await notifier.send_test(body)
+    if sent:
+        print("Admin notification test sent.")
+    else:
+        print(
+            "Admin notification test was not sent. Check admin_notifications and email_relay settings.",
+            file=sys.stderr,
+        )
+    return sent
+
 
 async def _do_login(config: Config) -> None:
     """
     Interactive Telegram authentication for first-time setup.
 
     Creates a TelegramClient using the same credentials and proxy as the
-    relay service, completes the SMS + optional 2FA flow, and saves the
+    relay service, completes the login-code + optional 2FA flow, and saves the
     session file.  After this exits the service can start unattended.
     """
     from telethon import TelegramClient
+    from telethon import errors
 
     # Build proxy the same way the relay does
     tg_proxy: dict = {}
@@ -336,9 +565,13 @@ async def _do_login(config: Config) -> None:
     if cfg.enabled and cfg.host:
         print(f"  Proxy    : {cfg.type.upper()} {cfg.host}:{cfg.port}")
     print()
-    print("  Telegram will send an SMS code to your phone.")
-    print("  If two-step verification (2FA) is enabled you will also")
-    print("  be prompted for your Cloud Password.")
+    print("  Telegram will send a login code through the delivery method it chooses.")
+    print("  This is often an in-app message from the official Telegram chat,")
+    print("  not necessarily SMS. The chosen method will be printed below.")
+    print("  If no code arrives within about one minute, press Ctrl+C and")
+    print("  try again about 3 hours later. This is not a relay issue.")
+    print("  If two-step verification (2FA) is enabled you will also be")
+    print("  prompted for your Cloud Password.")
     print()
 
     client = TelegramClient(
@@ -347,22 +580,63 @@ async def _do_login(config: Config) -> None:
         config.telegram.api_hash,
         **tg_proxy,
     )
-    await client.start(phone=config.telegram.phone)
-    me = await client.get_me()
-    name = f"{me.first_name or ''} {me.last_name or ''}".strip()
-    un   = f"@{me.username}" if me.username else "(no username)"
-    print()
-    print(f"  Authenticated as: {name} {un}")
-    print(f"  Session saved  : {config.telegram.session_name}.session")
-    print()
-    print("  You can now start the Aardvark service.")
-    await client.disconnect()
+    try:
+        await client.connect()
+        me = await client.get_me()
+        if me is None:
+            sent_code = await client.send_code_request(config.telegram.phone)
+            _print_telegram_code_delivery(sent_code)
+
+            attempts = 0
+            two_step_detected = False
+            while me is None and attempts < 3 and not two_step_detected:
+                code = input("  Telegram login code: ").strip()
+                attempts += 1
+                try:
+                    me = await client.sign_in(config.telegram.phone, code=code)
+                except errors.SessionPasswordNeededError:
+                    two_step_detected = True
+                except (
+                    errors.PhoneCodeEmptyError,
+                    errors.PhoneCodeExpiredError,
+                    errors.PhoneCodeHashEmptyError,
+                    errors.PhoneCodeInvalidError,
+                ) as exc:
+                    print(f"  Invalid or expired code ({type(exc).__name__}). Please try again.")
+
+            if two_step_detected:
+                attempts = 0
+                while me is None and attempts < 3:
+                    password = getpass.getpass("  Telegram Cloud Password (2FA): ")
+                    attempts += 1
+                    try:
+                        me = await client.sign_in(password=password)
+                    except errors.PasswordHashInvalidError:
+                        print("  Invalid Cloud Password. Please try again.")
+
+            if me is None:
+                raise RuntimeError("Telegram login failed after 3 attempts.")
+
+        name = f"{me.first_name or ''} {me.last_name or ''}".strip()
+        un   = f"@{me.username}" if me.username else "(no username)"
+        print()
+        print(f"  Authenticated as: {name} {un}")
+        print(f"  Session saved  : {config.telegram.session_name}.session")
+        print()
+        print("  You can now start the Aardvark service.")
+    finally:
+        await client.disconnect()
 
 
 async def _run_relay(initial_config: Config, config_path: str) -> None:
     """Set up all subsystems and run the relay until interrupted."""
 
     state = _RelayState(initial_config)
+    admin_notifier = AdminNotifier(
+        state.config.admin_notifications,
+        state.config.email_relay,
+        proxy_cfg=state.config.dc_proxy,
+    )
 
     # --- Channel mapper (invite links → file) ---
     mapper = ChannelMapper(state.config.relay.invite_links_file)
@@ -391,9 +665,26 @@ async def _run_relay(initial_config: Config, config_path: str) -> None:
             # Run blocking start() in executor to avoid blocking the loop
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(None, dc_client.start)
-        except Exception:
+        except Exception as exc:
             logger.exception(
                 "Failed to start Delta Chat client – DC forwarding disabled"
+            )
+            await admin_notifier.notify(
+                "delta-chat-start-failed",
+                "Delta Chat forwarding failed",
+                _admin_issue_body(
+                    "Delta Chat forwarding failed",
+                    "Delta Chat did not start, so Telegram messages cannot be forwarded to Delta Chat channels.",
+                    config_path,
+                    actions=[
+                        "Check [delta_chat] addr, mail_pw, mail_server, and send_server in config.toml.",
+                        "Verify the provider allows IMAP/SMTP access and that an App Password is used when required.",
+                        "If the network requires a proxy for email, configure [dc_proxy] with socks5/http.",
+                        "Restart the service after fixing credentials or proxy settings.",
+                    ],
+                    details="".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
+                    session_name=state.config.telegram.session_name,
+                ),
             )
             dc_client = None
     elif state.config.delta_chat is not None and not state.config.delta_chat.enabled:
@@ -556,23 +847,103 @@ async def _run_relay(initial_config: Config, config_path: str) -> None:
     )
     tg.set_message_callback(_on_message)
 
+    async def _park_after_unrecoverable_telegram_error(
+        exc: TelegramSessionInvalidError,
+    ) -> None:
+        """
+        Keep the service process alive after an unrecoverable Telegram auth error.
+
+        launchd/systemd would otherwise restart the process repeatedly even
+        though a duplicated, revoked, or missing Telethon session cannot be
+        fixed automatically.  Parking avoids a noisy crash loop and leaves a
+        clear log message with the manual re-authentication steps.
+        """
+        logger.error("Unrecoverable Telegram session error: %s", exc)
+        logger.error(
+            "Aardvark is parked and will not relay Telegram messages until "
+            "the session is recreated.  After re-authenticating, restart the "
+            "service to resume normal operation."
+        )
+        await admin_notifier.notify(
+            "telegram-session-invalid",
+            "Telegram re-authentication required",
+            _admin_telegram_reauth_body(
+                exc,
+                config_path,
+                state.config.telegram.session_name,
+            ),
+        )
+        while True:
+            await asyncio.sleep(3600)
+
     # Startup timeout: if Telethon cannot connect within this window (e.g. network
     # outage at boot time) the process exits so launchd/systemd can restart it later
     # rather than hanging indefinitely inside client.start().
     _STARTUP_TIMEOUT = 120  # seconds
     try:
         await asyncio.wait_for(tg.start(), timeout=_STARTUP_TIMEOUT)
+    except TelegramSessionInvalidError as exc:
+        if dc_client is not None:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, dc_client.stop)
+        await _park_after_unrecoverable_telegram_error(exc)
+        return
     except asyncio.TimeoutError:
         logger.error(
             "Startup: Telegram connection timed out after %ds "
             "(network may be down). Exiting for automatic restart.",
             _STARTUP_TIMEOUT,
         )
+        await admin_notifier.notify(
+            "telegram-startup-timeout",
+            "Telegram startup timed out",
+            _admin_issue_body(
+                "Telegram startup timed out",
+                "The relay could not connect to Telegram during startup, so it cannot relay messages.",
+                config_path,
+                actions=[
+                    "Check whether Telegram is reachable from the host.",
+                    "Check [proxy] settings if a proxy or VPN route is required.",
+                    "Review the relay log and service status.",
+                    "Restart the service after network/proxy recovery if it did not recover automatically.",
+                ],
+                session_name=state.config.telegram.session_name,
+            ),
+        )
         sys.exit(1)
+    except Exception as exc:
+        logger.exception("Startup: Telegram client failed before relay could run")
+        await admin_notifier.notify(
+            "telegram-startup-failed",
+            "Telegram startup failed",
+            _admin_issue_body(
+                "Telegram startup failed",
+                "The relay failed before it could start listening for Telegram messages.",
+                config_path,
+                actions=[
+                    "Check service logs for the exact exception.",
+                    "Verify Telegram API credentials, network, and [proxy] settings.",
+                    "If the error mentions authorization or session, recreate the Telegram session with --login.",
+                    "Restart the service after fixing the issue.",
+                ],
+                details="".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
+                include_reauth=True,
+                session_name=state.config.telegram.session_name,
+            ),
+        )
+        raise
 
     # History replay runs outside the startup timeout: media downloads through
     # slow proxies can take much longer than a normal connection timeout.
-    await tg.relay_history()
+    try:
+        await tg.relay_history()
+    except TelegramSessionInvalidError as exc:
+        await tg.stop()
+        if dc_client is not None:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, dc_client.stop)
+        await _park_after_unrecoverable_telegram_error(exc)
+        return
 
     # --- Helper: sync Telegram channel photo → DC channel ---
 
@@ -666,6 +1037,8 @@ async def _run_relay(initial_config: Config, config_path: str) -> None:
                 try:
                     new_cfg = load_config(config_path)
                     await _apply_config_delta(new_cfg)
+                except TelegramSessionInvalidError:
+                    raise
                 except Exception:
                     logger.exception(
                         "Config reload failed – keeping current configuration"
@@ -747,7 +1120,9 @@ async def _run_relay(initial_config: Config, config_path: str) -> None:
     async def _blob_cache_cleanup() -> None:
         """Run cleanup once at startup and then on a fixed interval."""
         if dc_client is None:
-            return
+            # Keep this task alive.  The main loop uses FIRST_COMPLETED, so a
+            # helper task returning would otherwise stop the entire relay.
+            await asyncio.Event().wait()
         # Pull the configured lifetime once; a non-positive value disables
         # the task entirely (cleanup_blob_cache() also no-ops in that case,
         # but skipping the loop avoids needless wake-ups).
@@ -757,7 +1132,9 @@ async def _run_relay(initial_config: Config, config_path: str) -> None:
                 "DC blob cache cleanup disabled (cache_lifetime_hours=%d).",
                 lifetime,
             )
-            return
+            # Keep this task alive for the same reason as the dc_client=None
+            # branch above.
+            await asyncio.Event().wait()
         logger.info(
                 "DC blob cache cleanup enabled: removing files older than %d h "
                 "every %d min.",
@@ -787,6 +1164,21 @@ async def _run_relay(initial_config: Config, config_path: str) -> None:
                     "Watchdog: Telegram servers unreachable (network down?) "
                     "-- skipping checks until next cycle."
                 )
+                await admin_notifier.notify(
+                    "telegram-network-unreachable",
+                    "Telegram network unreachable",
+                    _admin_issue_body(
+                        "Telegram network unreachable",
+                        "The watchdog could not reach Telegram. Relay delivery may be stopped until network access returns.",
+                        config_path,
+                        actions=[
+                            "Check internet connectivity from the service host.",
+                            "Check VPN/proxy routing if Telegram requires a proxy on this network.",
+                            "Review logs to confirm whether the service recovered on the next watchdog cycle.",
+                        ],
+                        session_name=state.config.telegram.session_name,
+                    ),
+                )
                 continue
 
             # 2. Telegram connection liveness – reconnect immediately if disconnected
@@ -796,8 +1188,27 @@ async def _run_relay(initial_config: Config, config_path: str) -> None:
                 )
                 try:
                     await tg.reconnect()
-                except Exception:
+                except TelegramSessionInvalidError:
+                    raise
+                except Exception as exc:
                     logger.exception("Watchdog: Telegram reconnect failed -- will retry")
+                    await admin_notifier.notify(
+                        "telegram-reconnect-failed",
+                        "Telegram reconnect failed",
+                        _admin_issue_body(
+                            "Telegram reconnect failed",
+                            "The watchdog detected a disconnected Telegram client and could not reconnect it.",
+                            config_path,
+                            actions=[
+                                "Check network/proxy reachability.",
+                                "Check whether the Telegram session was revoked or invalidated.",
+                                "If authorization is suspected, stop the service and run --login to recreate the session.",
+                            ],
+                            details="".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
+                            include_reauth=True,
+                            session_name=state.config.telegram.session_name,
+                        ),
+                    )
                 continue  # re-check DC on the next cycle after reconnect settles
 
             # 3. Update-state staleness – reconnect after 6 h of silence
@@ -810,8 +1221,27 @@ async def _run_relay(initial_config: Config, config_path: str) -> None:
                 )
                 try:
                     await tg.reconnect()
-                except Exception:
+                except TelegramSessionInvalidError:
+                    raise
+                except Exception as exc:
                     logger.exception("Watchdog: Telegram reconnect failed -- will retry")
+                    await admin_notifier.notify(
+                        "telegram-staleness-reconnect-failed",
+                        "Telegram staleness reconnect failed",
+                        _admin_issue_body(
+                            "Telegram staleness reconnect failed",
+                            "The watchdog tried to refresh Telegram update state after extended silence and reconnect failed.",
+                            config_path,
+                            actions=[
+                                "Check whether Telegram is reachable.",
+                                "Check [proxy] if the route changed or VPN/provider changed.",
+                                "If logs mention authorization/session, recreate the session with --login.",
+                            ],
+                            details="".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
+                            include_reauth=True,
+                            session_name=state.config.telegram.session_name,
+                        ),
+                    )
                 continue
 
             # 4. Delta Chat health – exit cleanly so launchd/systemd can restart
@@ -820,6 +1250,21 @@ async def _run_relay(initial_config: Config, config_path: str) -> None:
                 logger.error(
                     "Watchdog: Delta Chat is unresponsive. "
                     "Exiting for automatic service restart."
+                )
+                await admin_notifier.notify(
+                    "delta-chat-unresponsive",
+                    "Delta Chat is unresponsive",
+                    _admin_issue_body(
+                        "Delta Chat is unresponsive",
+                        "The Delta Chat RPC server stopped responding. The relay is exiting so the service manager can restart it.",
+                        config_path,
+                        actions=[
+                            "Check whether the service restarts and Delta Chat recovers automatically.",
+                            "If it repeats, inspect logs and the Delta Chat account directory.",
+                            "Verify IMAP/SMTP connectivity and [dc_proxy] settings.",
+                        ],
+                        session_name=state.config.telegram.session_name,
+                    ),
                 )
                 sys.exit(1)
 
@@ -837,6 +1282,16 @@ async def _run_relay(initial_config: Config, config_path: str) -> None:
         [run_task, stop_task, watch_task, invite_task, watchdog_task, blob_task],
         return_when=asyncio.FIRST_COMPLETED,
     )
+    fatal_telegram_error: TelegramSessionInvalidError | None = None
+    unexpected_error: BaseException | None = None
+    for task in _done:
+        if task.cancelled():
+            continue
+        exc = task.exception()
+        if isinstance(exc, TelegramSessionInvalidError):
+            fatal_telegram_error = exc
+        elif exc is not None:
+            unexpected_error = exc
     for task in _pending:
         task.cancel()
 
@@ -846,6 +1301,33 @@ async def _run_relay(initial_config: Config, config_path: str) -> None:
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, dc_client.stop)
     logger.info("Relay service stopped.")
+
+    if fatal_telegram_error is not None:
+        await _park_after_unrecoverable_telegram_error(fatal_telegram_error)
+    if unexpected_error is not None:
+        await admin_notifier.notify(
+            "relay-unexpected-error",
+            "Relay stopped after unexpected error",
+            _admin_issue_body(
+                "Relay stopped after unexpected error",
+                "A relay task ended with an unexpected exception. The service may not relay messages until it is restarted and the cause is fixed.",
+                config_path,
+                actions=[
+                    "Review the traceback below and the full relay log.",
+                    "Check service status and whether the service manager restarted the process.",
+                    "If the cause is unclear, collect logs before changing configuration.",
+                ],
+                details="".join(
+                    traceback.format_exception(
+                        type(unexpected_error),
+                        unexpected_error,
+                        unexpected_error.__traceback__,
+                    )
+                ),
+                session_name=state.config.telegram.session_name,
+            ),
+        )
+        raise unexpected_error
 
 
 # ---------------------------------------------------------------------------
@@ -891,6 +1373,11 @@ def main() -> None:
 
     if args.list_channels:
         asyncio.run(_list_channels(config))
+        return
+    if args.test_admin_notification:
+        ok = asyncio.run(_send_admin_notification_test(config, args.config))
+        if not ok:
+            sys.exit(1)
         return
 
     asyncio.run(_run_relay(config, args.config))

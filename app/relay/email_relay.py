@@ -56,7 +56,7 @@ class EmailRelay:
         subject: str,
         body: str,
         media_path: Optional[str] = None,
-    ) -> None:
+    ) -> bool:
         """
         Send an e-mail asynchronously, with an optional media attachment.
 
@@ -65,9 +65,9 @@ class EmailRelay:
         disabled in configuration.
         """
         if not self._cfg.enabled:
-            return
+            return False
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self._send_sync, subject, body, media_path)
+        return await loop.run_in_executor(None, self._send_sync, subject, body, media_path)
 
     # ------------------------------------------------------------------
     # Internal
@@ -105,12 +105,12 @@ class EmailRelay:
         subject: str,
         body: str,
         media_path: Optional[str] = None,
-    ) -> None:
+    ) -> bool:
         """Blocking SMTP send to all configured recipients; runs in a thread executor."""
         cfg = self._cfg
         recipients = cfg.target_emails
         if not recipients:
-            return
+            return False
 
         msg = MIMEMultipart("mixed" if media_path else "alternative")
         msg["Subject"] = subject
@@ -140,34 +140,49 @@ class EmailRelay:
         try:
             mode = cfg.ssl_mode
             if mode == "starttls":
-                smtp_cls = smtplib.SMTP
-                with smtp_cls(cfg.smtp_host, cfg.smtp_port, timeout=30, source_address=None) as smtp:
-                    if sock is not None:
-                        smtp.sock = sock
-                        smtp.file = smtp.sock.makefile("rb")
+                if sock is not None:
+                    smtp = smtplib.SMTP(timeout=30)
+                    smtp._host = cfg.smtp_host
+                    smtp.sock = sock
+                    smtp.file = smtp.sock.makefile("rb")
+                else:
+                    smtp = smtplib.SMTP(cfg.smtp_host, cfg.smtp_port, timeout=30)
+                with smtp:
                     smtp.ehlo()
                     smtp.starttls(context=context)
                     smtp.login(cfg.smtp_user, cfg.smtp_password)
                     smtp.sendmail(cfg.smtp_user, recipients, raw)
             elif mode == "none":
-                with smtplib.SMTP(cfg.smtp_host, cfg.smtp_port, timeout=30) as smtp:
-                    if sock is not None:
-                        smtp.sock = sock
-                        smtp.file = smtp.sock.makefile("rb")
+                if sock is not None:
+                    smtp = smtplib.SMTP(timeout=30)
+                    smtp._host = cfg.smtp_host
+                    smtp.sock = sock
+                    smtp.file = smtp.sock.makefile("rb")
+                else:
+                    smtp = smtplib.SMTP(cfg.smtp_host, cfg.smtp_port, timeout=30)
+                with smtp:
                     smtp.login(cfg.smtp_user, cfg.smtp_password)
                     smtp.sendmail(cfg.smtp_user, recipients, raw)
             else:
                 # Default: implicit TLS (SMTP_SSL)
-                with smtplib.SMTP_SSL(
-                    cfg.smtp_host, cfg.smtp_port, context=context,
-                    timeout=30, sock=sock,
-                ) as smtp:
+                if sock is not None:
+                    smtp = smtplib.SMTP_SSL(context=context, timeout=30)
+                    smtp._host = cfg.smtp_host
+                    smtp.sock = context.wrap_socket(sock, server_hostname=cfg.smtp_host)
+                    smtp.file = smtp.sock.makefile("rb")
+                else:
+                    smtp = smtplib.SMTP_SSL(
+                        cfg.smtp_host, cfg.smtp_port, context=context,
+                        timeout=30,
+                    )
+                with smtp:
                     smtp.login(cfg.smtp_user, cfg.smtp_password)
                     smtp.sendmail(cfg.smtp_user, recipients, raw)
             logger.info(
                 "E-mail sent to %s via %s [ssl_mode=%s]: %s",
                 ", ".join(recipients), cfg.smtp_host, cfg.ssl_mode, subject,
             )
+            return True
         except smtplib.SMTPAuthenticationError:
             logger.error(
                 "E-mail authentication failed for %s@%s.  "
@@ -184,3 +199,4 @@ class EmailRelay:
                 "Failed to send e-mail to %s via %s:%d [ssl_mode=%s]",
                 ", ".join(recipients), cfg.smtp_host, cfg.smtp_port, cfg.ssl_mode,
             )
+        return False

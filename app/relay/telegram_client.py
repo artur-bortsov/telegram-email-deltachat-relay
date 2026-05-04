@@ -2,8 +2,8 @@
 Telegram client: connects with user credentials (MTProto) and monitors
 the configured channels for new messages.
 
-Authentication is interactive on first run (Telethon prompts for the SMS
-code); after that the session file is reused automatically.
+Authentication is interactive on first run (Telethon prompts for a Telegram
+login code); after that the session file is reused automatically.
 """
 
 from __future__ import annotations
@@ -12,12 +12,15 @@ import asyncio
 import logging
 import os
 import shutil
+import sys
 import tempfile
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Awaitable, Callable, Dict, List, Optional, Tuple
 
 from telethon import TelegramClient, events
+from telethon.errors import AuthKeyDuplicatedError, UnauthorizedError
 from telethon.tl.types import Channel, Message
 
 from .config import ChannelsConfig, ProxyConfig, RelayConfig, TelegramConfig
@@ -37,6 +40,15 @@ logger = logging.getLogger(__name__)
 
 # Callback: (channel_name, channel_id_str, text, media_path_or_None) → None
 MessageCallback = Callable[[str, str, str, Optional[str]], Awaitable[None]]
+
+
+class TelegramSessionInvalidError(RuntimeError):
+    """
+    Raised when the saved Telethon session cannot be used unattended.
+
+    The service cannot recover from this by itself: Telegram requires a
+    one-time interactive login to create a new authorization key.
+    """
 
 
 class TelegramMonitor:
@@ -93,6 +105,10 @@ class TelegramMonitor:
         # run_forever() uses this to loop back to run_until_disconnected() with
         # the new client instead of exiting and triggering a full teardown.
         self._reconnect_in_progress: bool = False
+        # Fatal error raised from Telethon update callbacks.  Event handlers run
+        # outside our direct await chain, so they store the error here and force
+        # a disconnect; run_forever() then re-raises it in the main task.
+        self._fatal_error: Optional[BaseException] = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -159,6 +175,89 @@ class TelegramMonitor:
         """Register the async callback invoked for each message to relay."""
         self._message_callback = callback
 
+    def _session_file_path(self) -> Path:
+        """
+        Return the SQLite session file path Telethon uses for this session.
+
+        Telethon appends ".session" unless the supplied session name already
+        has that suffix.  The path is relative to the service working directory
+        when the config uses a bare name such as "aardvark".
+        """
+        path = Path(self._tg_cfg.session_name)
+        if path.suffix != ".session":
+            path = Path(f"{path}.session")
+        return path
+
+    def _session_error_message(self, reason: str) -> str:
+        """Build a user-actionable message for unrecoverable auth errors."""
+        session_path = self._session_file_path()
+        return (
+            f"Telegram session is not usable: {reason}. "
+            f"Session file: {session_path}. "
+            "Stop the service, move/delete the session file if it still exists, "
+            "then run an interactive login from the install directory: "
+            "python app/relay.py --login --config config.toml. "
+            "Do not reuse the same .session file from another machine, IP, or "
+            "simultaneous relay process; create a separate session per install."
+        )
+
+    def _ensure_unattended_session_available(self) -> None:
+        """
+        Fail fast when a background service has no reusable Telegram session.
+
+        Without this guard Telethon tries to prompt for a Telegram login code from a
+        launchd/systemd service with no terminal, which produces confusing
+        crashes or hangs.  Foreground interactive runs are still allowed.
+        """
+        session_path = self._session_file_path()
+        if not session_path.exists() and not sys.stdin.isatty():
+            raise TelegramSessionInvalidError(
+                self._session_error_message(
+                    "the session file is missing and the process has no terminal "
+                    "for Telegram login-code/2FA authentication"
+                )
+            )
+
+    async def _start_client(self, context: str) -> None:
+        """Start Telethon and convert known auth failures into clear errors."""
+        self._ensure_unattended_session_available()
+        try:
+            # ``phone`` triggers Telegram's login-code flow on first interactive run.
+            await self._client.start(phone=self._tg_cfg.phone)
+        except AuthKeyDuplicatedError as exc:
+            raise TelegramSessionInvalidError(
+                self._session_error_message(
+                    "Telegram invalidated the authorization key because this "
+                    "session was used from different IPs or processes "
+                    f"simultaneously during {context}"
+                )
+            ) from exc
+        except UnauthorizedError as exc:
+            raise TelegramSessionInvalidError(
+                self._session_error_message(
+                    f"Telegram rejected the saved authorization during {context}"
+                )
+            ) from exc
+        except EOFError as exc:
+            raise TelegramSessionInvalidError(
+                self._session_error_message(
+                    "Telegram login requires a login code/2FA password, but the process "
+                    "has no interactive terminal"
+                )
+            ) from exc
+
+    async def _mark_fatal_auth_error(self, exc: BaseException) -> None:
+        """
+        Store a fatal auth error raised from a callback and wake run_forever().
+
+        Telethon event callbacks are not awaited by our main task directly.
+        Disconnecting makes run_until_disconnected() return; run_forever() then
+        re-raises the stored error so relay.py can park the service cleanly.
+        """
+        self._fatal_error = exc
+        if self._client and self._client.is_connected():
+            await self._client.disconnect()
+
     async def start(self) -> None:
         """
         Connect to Telegram, resolve channels, and register the event handler.
@@ -188,8 +287,7 @@ class TelegramMonitor:
             self._tg_cfg.api_hash,
             **proxy_param,
         )
-        # ``phone`` triggers SMS code login on first run
-        await self._client.start(phone=self._tg_cfg.phone)
+        await self._start_client("startup")
         logger.info("Telegram client connected (session: %s)", self._tg_cfg.session_name)
 
         await self._resolve_channels()
@@ -218,7 +316,24 @@ class TelegramMonitor:
         exiting (which would trigger a full service teardown).
         """
         while True:
-            await self._client.run_until_disconnected()
+            try:
+                await self._client.run_until_disconnected()
+            except AuthKeyDuplicatedError as exc:
+                raise TelegramSessionInvalidError(
+                    self._session_error_message(
+                        "Telegram invalidated the authorization key while "
+                        "processing updates"
+                    )
+                ) from exc
+            except UnauthorizedError as exc:
+                raise TelegramSessionInvalidError(
+                    self._session_error_message(
+                        "Telegram rejected the saved authorization while "
+                        "processing updates"
+                    )
+                ) from exc
+            if self._fatal_error is not None:
+                raise self._fatal_error
             if not self._reconnect_in_progress:
                 # Normal stop() was called — exit cleanly.
                 break
@@ -282,7 +397,7 @@ class TelegramMonitor:
             self._tg_cfg.api_hash,
             **proxy_param,
         )
-        await self._client.start(phone=self._tg_cfg.phone)
+        await self._start_client("watchdog reconnect")
         logger.info("Watchdog: Telegram client reconnected")
         # Clear resolved state so channels are re-resolved cleanly.
         self._entities.clear()
@@ -338,6 +453,12 @@ class TelegramMonitor:
                 self._eid_to_identifier[eid] = identifier
                 added.append((eid, name))
                 logger.info("Added channel to monitoring: %r (id=%d)", name, eid)
+            except (AuthKeyDuplicatedError, UnauthorizedError) as exc:
+                raise TelegramSessionInvalidError(
+                    self._session_error_message(
+                        f"Telegram authorization failed while adding channel {identifier}"
+                    )
+                ) from exc
             except Exception:
                 logger.exception("Failed to add channel: %s", identifier)
 
@@ -412,6 +533,12 @@ class TelegramMonitor:
                 logger.info(
                     "Resolved channel: %s → id=%d, name=%r", identifier, eid, name
                 )
+            except (AuthKeyDuplicatedError, UnauthorizedError) as exc:
+                raise TelegramSessionInvalidError(
+                    self._session_error_message(
+                        f"Telegram authorization failed while resolving {identifier}"
+                    )
+                ) from exc
             except Exception:
                 logger.exception("Failed to resolve Telegram channel: %s", identifier)
 
@@ -477,6 +604,12 @@ class TelegramMonitor:
                         len(messages), name,
                     )
                 await self._relay_message_list(messages, name, str(eid))
+            except (AuthKeyDuplicatedError, UnauthorizedError) as exc:
+                raise TelegramSessionInvalidError(
+                    self._session_error_message(
+                        f"Telegram authorization failed while fetching history for {name}"
+                    )
+                ) from exc
             except Exception:
                 logger.exception("Error fetching history for channel '%s'", name)
 
@@ -684,6 +817,17 @@ class TelegramMonitor:
                     # Update watermark so restarts don't re-relay this message
                     if self._state_tracker:
                         self._state_tracker.update(str(eid), msg.id)
+        except TelegramSessionInvalidError as exc:
+            logger.error("%s", exc)
+            await self._mark_fatal_auth_error(exc)
+        except (AuthKeyDuplicatedError, UnauthorizedError) as exc:
+            session_error = TelegramSessionInvalidError(
+                self._session_error_message(
+                    "Telegram authorization failed while handling a live update"
+                )
+            )
+            logger.error("%s", session_error)
+            await self._mark_fatal_auth_error(session_error)
         except Exception:
             logger.exception("Error handling new Telegram message")
 
@@ -780,6 +924,12 @@ class TelegramMonitor:
             tmp_dir = tempfile.mkdtemp(prefix="tg_relay_")
             path = await self._client.download_media(msg, file=tmp_dir)
             return text, (str(path) if path else None)
+        except (AuthKeyDuplicatedError, UnauthorizedError) as exc:
+            raise TelegramSessionInvalidError(
+                self._session_error_message(
+                    "Telegram authorization failed while downloading media"
+                )
+            ) from exc
         except Exception:
             logger.exception("Failed to download media from Telegram message")
             return text, None

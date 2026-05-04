@@ -81,11 +81,16 @@ All other settings can be left at the default values.
 
 ## Step 4 — Confirm the Telegram login
 
-On the first run, Telegram sends an **SMS verification code** to the phone number
-you entered.  Type it in the installer terminal window.
+On the first run, Telegram sends a **login code** using the delivery method it
+chooses: Telegram app message, SMS, call, email, or another available method.
+Type only that code in the installer terminal window.
 
 If your account has **two-step verification (Cloud Password / 2FA)** enabled,
-a password prompt appears immediately after the SMS code.  Enter your password there.
+a password prompt appears immediately after the login code.  Enter your password there.
+
+If no code arrives within about one minute, press **Ctrl+C**, do not keep
+requesting codes, and try again about **3 hours later**.  This is Telegram code
+delivery throttling/selection, not a relay issue.
 
 After a successful login the session is saved to a `.session` file.
 Future service starts use it automatically — no code is needed again.

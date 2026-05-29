@@ -37,7 +37,7 @@ import traceback
 from pathlib import Path
 from typing import Optional, Set
 
-__version__ = "1.3.0"   # SemVer: MAJOR.MINOR.PATCH
+__version__ = "1.4.0"   # SemVer: MAJOR.MINOR.PATCH
 
 from relay.admin_notifier import AdminNotifier
 from relay.burst_limiter import BurstLimiter
@@ -1154,32 +1154,60 @@ async def _run_relay(initial_config: Config, config_path: str) -> None:
 
     async def _watchdog() -> None:
         """Comprehensive health check: network, Telegram connection, idle staleness, DC."""
+        network_unreachable_since: float | None = None
         while True:
             await asyncio.sleep(_WATCHDOG_CHECK_INTERVAL)
 
             # 1. Network reachability – skip all reconnect attempts when offline
             network_ok = await _check_network()
             if not network_ok:
+                now = loop.time()
+                if network_unreachable_since is None:
+                    network_unreachable_since = now
+                outage_seconds = now - network_unreachable_since
+                delay_minutes = (
+                    state.config.admin_notifications.network_unreachable_delay_minutes
+                )
+                delay_seconds = delay_minutes * 60
                 logger.warning(
                     "Watchdog: Telegram servers unreachable (network down?) "
-                    "-- skipping checks until next cycle."
+                    "-- skipping checks until next cycle. Outage active for "
+                    "%.1f min; admin notification delay is %d min.",
+                    outage_seconds / 60,
+                    delay_minutes,
                 )
-                await admin_notifier.notify(
-                    "telegram-network-unreachable",
-                    "Telegram network unreachable",
-                    _admin_issue_body(
+                if outage_seconds >= delay_seconds:
+                    await admin_notifier.notify(
+                        "telegram-network-unreachable",
                         "Telegram network unreachable",
-                        "The watchdog could not reach Telegram. Relay delivery may be stopped until network access returns.",
-                        config_path,
-                        actions=[
-                            "Check internet connectivity from the service host.",
-                            "Check VPN/proxy routing if Telegram requires a proxy on this network.",
-                            "Review logs to confirm whether the service recovered on the next watchdog cycle.",
-                        ],
-                        session_name=state.config.telegram.session_name,
-                    ),
-                )
+                        _admin_issue_body(
+                            "Telegram network unreachable",
+                            "The watchdog could not reach Telegram for at least "
+                            f"{delay_minutes} minute(s). Relay delivery may be stopped "
+                            "until network access returns.",
+                            config_path,
+                            actions=[
+                                "Check internet connectivity from the service host.",
+                                "Check VPN/proxy routing if Telegram requires a proxy on this network.",
+                                "Review logs to confirm whether the service recovered on the next watchdog cycle.",
+                            ],
+                            details=(
+                                "Outage duration at notification time: "
+                                f"{outage_seconds / 60:.1f} min\n"
+                                "Configured delay before notification: "
+                                f"{delay_minutes} min"
+                            ),
+                            session_name=state.config.telegram.session_name,
+                        ),
+                    )
                 continue
+            if network_unreachable_since is not None:
+                outage_seconds = loop.time() - network_unreachable_since
+                logger.info(
+                    "Watchdog: Telegram network reachable again after %.1f min.",
+                    outage_seconds / 60,
+                )
+                network_unreachable_since = None
 
             # 2. Telegram connection liveness – reconnect immediately if disconnected
             if not tg.is_connected():

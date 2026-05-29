@@ -239,6 +239,13 @@ def _v_positive_int(v: str) -> Optional[str]:
     return None if int(v) > 0 else "must be greater than zero"
 
 
+def _v_int_ge0(v: str) -> Optional[str]:
+    err = _v_int(v)
+    if err:
+        return err
+    return None if int(v) >= 0 else "must be 0 or positive"
+
+
 def _v_float_ge0(v: str) -> Optional[str]:
     if not v:
         return "value cannot be empty"
@@ -485,6 +492,7 @@ from_name     = "{em['from_name']}"
 enabled              = {"true" if admin["enabled"] else "false"}
 administrator_emails = {_toml_arr(admin["administrator_emails"])}
 cooldown_minutes     = {admin["cooldown_minutes"]}
+network_unreachable_delay_minutes = {admin.get("network_unreachable_delay_minutes", 30)}
 state_file           = "{admin['state_file']}"
 """
     path.write_text(content, encoding="utf-8")
@@ -807,6 +815,7 @@ def _wizard_email_relay(em: Dict[str, Any], dc_addr: str = "") -> Dict[str, Any]
         "use_tls": False,
     }
 
+
 def _wizard_admin_notifications(
     admin: Dict[str, Any],
     em: Dict[str, Any],
@@ -833,6 +842,7 @@ def _wizard_admin_notifications(
             "enabled": False,
             "administrator_emails": [],
             "cooldown_minutes": 180,
+            "network_unreachable_delay_minutes": 30,
             "state_file": "admin_notifications_state.json",
         }
 
@@ -883,6 +893,11 @@ def _wizard_admin_notifications(
         str(admin.get("cooldown_minutes", 180)),
         _v_positive_int,
     ))
+    network_unreachable_delay_minutes = int(_ask(
+        "Telegram network-unreachable alert delay in minutes",
+        str(admin.get("network_unreachable_delay_minutes", 30)),
+        _v_int_ge0,
+    ))
     state_file = _ask(
         "Admin notification state filename",
         str(admin.get("state_file", "admin_notifications_state.json")),
@@ -892,6 +907,7 @@ def _wizard_admin_notifications(
         "enabled": True,
         "administrator_emails": administrator_emails,
         "cooldown_minutes": cooldown_minutes,
+        "network_unreachable_delay_minutes": network_unreachable_delay_minutes,
         "state_file": state_file,
     }
 

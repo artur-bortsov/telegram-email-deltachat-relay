@@ -133,6 +133,10 @@ def validate(path: Path, require_complete: bool) -> int:
             )
         if int(admin.get("cooldown_minutes", 180)) < 0:
             return _fail("admin_notifications.cooldown_minutes must be >= 0")
+        if int(admin.get("network_unreachable_delay_minutes", 30)) < 0:
+            return _fail(
+                "admin_notifications.network_unreachable_delay_minutes must be >= 0"
+            )
         missing = [
             name for name in (
                 "smtp_host",

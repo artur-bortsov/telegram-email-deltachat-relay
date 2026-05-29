@@ -4,6 +4,15 @@ All notable changes to Aardvark are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ---
+## [1.4.0] – 2026-05-29
+
+### Added
+- **Delayed Telegram network-unreachable alerts** — new
+  `admin_notifications.network_unreachable_delay_minutes` option defaults to
+  30 minutes, so short Telegram reachability blips no longer send immediate
+  administrator emails.  Set it to `0` to restore immediate watchdog alerts.
+
+---
 
 ## [1.3.0] – 2026-05-05
 

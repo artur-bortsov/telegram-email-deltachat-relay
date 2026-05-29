@@ -278,10 +278,15 @@ from_name     = "Aardvark"
 # administrator_emails  –  recipients for alerts.
 # cooldown_minutes  –  suppress repeated alerts with the same issue key for
 #   this many minutes.  Default: 180.
+# network_unreachable_delay_minutes  –  do not send "Telegram network
+#   unreachable" email until the outage has remained active for at least this
+#   many minutes.  Default: 30.  Set to 0 to notify on the first failed
+#   watchdog check.
 # state_file  –  JSON file used to remember cooldown timestamps.
 # ------------------------------------------------------------
 [admin_notifications]
 enabled              = false
 administrator_emails = ["admin@example.com"]
 cooldown_minutes     = 180
+network_unreachable_delay_minutes = 30
 state_file           = "admin_notifications_state.json"

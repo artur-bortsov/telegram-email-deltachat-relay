@@ -432,6 +432,10 @@ Common setups:
   use the same mailbox, admin alerts will naturally come from that same
   mailbox, but the notifier still reads the SMTP settings from `[email_relay]`
 - Use `cooldown_minutes` to suppress repeated alerts for the same issue
+- Use `network_unreachable_delay_minutes` to delay "Telegram network
+  unreachable" emails until the outage has remained active for at least that
+  many minutes.  Default: `30`.  Set to `0` to notify on the first failed
+  watchdog check
 
 ### Email address recommendations
 

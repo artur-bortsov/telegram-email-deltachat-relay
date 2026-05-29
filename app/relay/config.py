@@ -157,6 +157,11 @@ class AdminNotificationsConfig:
     # service manager restart loop or recurring watchdog failure from spamming
     # the administrator.
     cooldown_minutes: int = 180
+    # Telegram network reachability alerts are delayed until the outage has
+    # remained active for this many minutes.  This suppresses short transient
+    # network/proxy blips while still notifying administrators about sustained
+    # outages.  Set to 0 to notify on the first failed watchdog check.
+    network_unreachable_delay_minutes: int = 30
     # Small JSON file with last-sent timestamps for cooldown enforcement.
     state_file: str = "admin_notifications_state.json"
 
@@ -333,6 +338,9 @@ def load_config(path: str | Path) -> Config:
         enabled=bool(admin_raw.get("enabled", False)),
         administrator_emails=admin_emails,
         cooldown_minutes=int(admin_raw.get("cooldown_minutes", 180)),
+        network_unreachable_delay_minutes=int(
+            admin_raw.get("network_unreachable_delay_minutes", 30)
+        ),
         state_file=str(admin_raw.get("state_file", "admin_notifications_state.json")),
     )
     if admin_notifications.enabled and not admin_notifications.administrator_emails:
@@ -356,6 +364,10 @@ def load_config(path: str | Path) -> Config:
             )
     if admin_notifications.cooldown_minutes < 0:
         raise ValueError("admin_notifications.cooldown_minutes must be >= 0")
+    if admin_notifications.network_unreachable_delay_minutes < 0:
+        raise ValueError(
+            "admin_notifications.network_unreachable_delay_minutes must be >= 0"
+        )
 
     # --- DC / email proxy ---
     # Explicit [dc_proxy] section takes precedence.  If absent, auto-inherit
